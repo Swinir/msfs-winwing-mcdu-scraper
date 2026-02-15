@@ -1,0 +1,159 @@
+name: Build and Package Executables
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags (e.g., v1.0.0)
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  build-windows:
+    name: Build Windows Executable
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install Tesseract OCR
+      run: |
+        choco install tesseract -y
+        echo "C:\Program Files\Tesseract-OCR" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+    
+    - name: Build GUI Executable
+      run: |
+        pyinstaller --name "MSFS-MCDU-Scraper-GUI" `
+          --onefile `
+          --windowed `
+          --icon=NONE `
+          --add-data "config.yaml.example;." `
+          --add-data "docs;docs" `
+          --hidden-import=PIL `
+          --hidden-import=PIL._tkinter_finder `
+          --hidden-import=numpy `
+          --hidden-import=cv2 `
+          --hidden-import=yaml `
+          --hidden-import=win32gui `
+          --hidden-import=win32ui `
+          --hidden-import=win32con `
+          --hidden-import=win32api `
+          --collect-all pytesseract `
+          src/gui.py
+    
+    - name: Build CLI Executable
+      run: |
+        pyinstaller --name "MSFS-MCDU-Scraper-CLI" `
+          --onefile `
+          --console `
+          --icon=NONE `
+          --add-data "config.yaml.example;." `
+          --hidden-import=PIL `
+          --hidden-import=numpy `
+          --hidden-import=cv2 `
+          --hidden-import=yaml `
+          --collect-all pytesseract `
+          src/main.py
+    
+    - name: Package Release
+      run: |
+        # Create release directory
+        New-Item -ItemType Directory -Force -Path release
+        
+        # Copy executables
+        Copy-Item dist/MSFS-MCDU-Scraper-GUI.exe release/
+        Copy-Item dist/MSFS-MCDU-Scraper-CLI.exe release/
+        
+        # Copy documentation
+        Copy-Item README.md release/
+        Copy-Item QUICKSTART.md release/
+        Copy-Item LICENSE release/
+        Copy-Item config.yaml.example release/
+        Copy-Item -Recurse docs release/
+        
+        # Create README for release
+        @"
+        # MSFS WinWing MCDU Scraper - Executable Release
+        
+        ## Quick Start
+        
+        ### GUI Version (Recommended)
+        1. Double-click **MSFS-MCDU-Scraper-GUI.exe**
+        2. Pop out MCDU in MSFS
+        3. Start MobiFlight WinWing MCDU Connector
+        4. Select your MCDU window from the dropdown
+        5. Click "Start Scraper"
+        
+        ### CLI Version
+        1. Copy config.yaml.example to config.yaml
+        2. Edit config.yaml with your screen coordinates
+        3. Run **MSFS-MCDU-Scraper-CLI.exe**
+        
+        ## Requirements
+        - Windows 10/11
+        - Tesseract OCR installed (download from: https://github.com/UB-Mannheim/tesseract/wiki)
+        - MobiFlight WinWing MCDU Connector running
+        - MSFS 2020/2024 with Airbus A330
+        - WinWing CDU hardware
+        
+        ## Documentation
+        - See README.md for full documentation
+        - See docs/GUI_GUIDE.md for GUI usage
+        - See docs/CALIBRATION.md for screen setup
+        
+        ## Troubleshooting
+        - If Tesseract errors occur, install Tesseract OCR
+        - For connection errors, ensure MobiFlight is running on port 8320
+        - Check logs in the GUI or console output
+        
+        "@ | Out-File -FilePath release/README-EXECUTABLE.txt -Encoding UTF8
+        
+        # Create ZIP archive
+        Compress-Archive -Path release/* -DestinationPath MSFS-MCDU-Scraper-Windows.zip
+    
+    - name: Upload Release Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: MSFS-MCDU-Scraper-Windows
+        path: MSFS-MCDU-Scraper-Windows.zip
+    
+    - name: Create Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: MSFS-MCDU-Scraper-Windows.zip
+        body: |
+          # MSFS WinWing MCDU Scraper - Windows Executable Release
+          
+          ## What's Included
+          - **MSFS-MCDU-Scraper-GUI.exe** - Graphical user interface (recommended)
+          - **MSFS-MCDU-Scraper-CLI.exe** - Command-line version
+          - Complete documentation
+          - Example configuration file
+          
+          ## Quick Start
+          1. Download and extract MSFS-MCDU-Scraper-Windows.zip
+          2. Install Tesseract OCR: https://github.com/UB-Mannheim/tesseract/wiki
+          3. Run MSFS-MCDU-Scraper-GUI.exe
+          4. Follow the on-screen instructions
+          
+          ## Requirements
+          - Windows 10/11
+          - Tesseract OCR
+          - MobiFlight WinWing MCDU Connector
+          - MSFS with Airbus A330
+          - WinWing CDU hardware
+          
+          See README.md in the package for full documentation.
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

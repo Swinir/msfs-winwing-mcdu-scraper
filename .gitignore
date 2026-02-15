@@ -53,3 +53,13 @@ config.yaml
 # Temporary files
 /tmp/
 *.tmp
+
+# PyInstaller
+*.spec.bak
+release/
+*.zip
+
+# Build artifacts
+*.exe
+*.app
+*.dmg

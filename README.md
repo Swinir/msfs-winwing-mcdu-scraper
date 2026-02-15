@@ -29,34 +29,57 @@ A production-ready Python application that captures the Microsoft Flight Simulat
 
 ## Installation
 
-### 1. Clone Repository
+### Option A: Download Executable (Easiest - No Python Required!)
+
+**Perfect for users who just want to run the application without installing Python.**
+
+1. **Download** the latest release from [Releases](https://github.com/Swinir/msfs-winwing-mcdu-scraper/releases)
+   - Download `MSFS-MCDU-Scraper-Windows.zip`
+   
+2. **Extract** the ZIP file to a folder
+
+3. **Install Tesseract OCR**
+   - Download from: https://github.com/UB-Mannheim/tesseract/wiki
+   - Run the installer (default settings are fine)
+   
+4. **Run the application**
+   - Double-click `MSFS-MCDU-Scraper-GUI.exe` (for GUI)
+   - Or `MSFS-MCDU-Scraper-CLI.exe` (for command-line)
+
+**That's it!** No Python installation or dependencies needed.
+
+### Option B: Install from Source (For Developers)
+
+**For users who want to modify the code or run from Python.**
+
+#### 1. Clone Repository
 
 ```bash
 git clone https://github.com/Swinir/msfs-winwing-mcdu-scraper.git
 cd msfs-winwing-mcdu-scraper
 ```
 
-### 2. Create Virtual Environment (Recommended)
+#### 2. Create Virtual Environment (Recommended)
 
 ```bash
 python -m venv venv
 venv\Scripts\activate  # On Windows
 ```
 
-### 3. Install Dependencies
+#### 3. Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Install Tesseract OCR
+#### 4. Install Tesseract OCR
 
 Download and install Tesseract OCR from:
 https://github.com/UB-Mannheim/tesseract/wiki
 
 Add Tesseract to your PATH or update `pytesseract.pytesseract.tesseract_cmd` in `mcdu_parser.py`
 
-### 5. Configure Application
+#### 5. Configure Application
 
 ```bash
 copy config.yaml.example config.yaml
