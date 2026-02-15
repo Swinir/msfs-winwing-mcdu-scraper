@@ -13,8 +13,12 @@ from pathlib import Path
 from typing import Optional
 import queue
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add src to path (handle both normal and PyInstaller frozen execution)
+if getattr(sys, 'frozen', False):
+    # Running as PyInstaller bundle: modules are in the same temp directory
+    sys.path.insert(0, sys._MEIPASS)
+else:
+    sys.path.insert(0, str(Path(__file__).parent))
 
 from config import Config
 from window_capture import WindowCapture, WINDOWS_AVAILABLE
