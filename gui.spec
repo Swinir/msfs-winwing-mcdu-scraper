@@ -7,7 +7,7 @@ block_cipher = None
 
 a = Analysis(
     ['src/gui.py'],
-    pathex=[],
+    pathex=['src'],
     binaries=[],
     datas=[
         ('config.yaml.example', '.'),

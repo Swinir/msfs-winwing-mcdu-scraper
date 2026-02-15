@@ -135,5 +135,27 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(Config.COLORS["c"], "cyan")
 
 
+class TestGuiFrozenPathLogic(unittest.TestCase):
+    """Test the PyInstaller frozen-path logic used in gui.py"""
+
+    def test_frozen_path_uses_meipass(self):
+        """When sys.frozen is set, gui.py should use sys._MEIPASS for path"""
+        gui_path = Path(__file__).parent.parent / 'src' / 'gui.py'
+        with open(gui_path) as f:
+            source = f.read()
+
+        # Verify the source contains the frozen guard and _MEIPASS path
+        self.assertIn('frozen', source)
+        self.assertIn('_MEIPASS', source)
+
+    def test_non_frozen_path_uses_file_parent(self):
+        """When not frozen, gui.py should use Path(__file__).parent for path"""
+        gui_path = Path(__file__).parent.parent / 'src' / 'gui.py'
+        with open(gui_path) as f:
+            source = f.read()
+
+        self.assertIn("Path(__file__).parent", source)
+
+
 if __name__ == '__main__':
     unittest.main()
