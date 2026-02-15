@@ -122,7 +122,7 @@ jobs:
         Compress-Archive -Path release/* -DestinationPath MSFS-MCDU-Scraper-Windows.zip
     
     - name: Upload Release Artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: MSFS-MCDU-Scraper-Windows
         path: MSFS-MCDU-Scraper-Windows.zip
