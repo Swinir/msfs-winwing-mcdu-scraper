@@ -1,0 +1,26 @@
+mcdu:
+  captain:
+    enabled: true
+    screen_region:
+      top: 400
+      left: 800
+      width: 480
+      height: 280
+  
+  copilot:
+    enabled: false
+    screen_region:
+      top: 400
+      left: 1400
+      width: 480
+      height: 280
+
+mobiflight:
+  captain_url: "ws://localhost:8320/winwing/cdu-captain"
+  copilot_url: "ws://localhost:8320/winwing/cdu-co-pilot"
+  font: "AirbusThales"
+  max_retries: 3
+
+performance:
+  capture_fps: 30
+  enable_caching: true
