@@ -254,9 +254,15 @@ class RegionSelectorDialog:
             elif self.resize_corner == 'se':
                 x2, y2 = x, y
             
+            # Normalize rectangle first (handle inverted rectangles)
+            normalized_x1 = min(x1, x2)
+            normalized_y1 = min(y1, y2)
+            normalized_x2 = max(x1, x2)
+            normalized_y2 = max(y1, y2)
+            
             # Ensure valid rectangle (min size 20x20)
-            if x2 - x1 >= 20 and y2 - y1 >= 20:
-                self.selection_rect = (min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2))
+            if normalized_x2 - normalized_x1 >= 20 and normalized_y2 - normalized_y1 >= 20:
+                self.selection_rect = (normalized_x1, normalized_y1, normalized_x2, normalized_y2)
                 self._update_canvas()
         
         elif self.is_dragging:

@@ -55,6 +55,9 @@ def main():
         src_path / 'mcdu_parser.py',
         src_path / 'mobiflight_client.py',
         src_path / 'main.py',
+        src_path / 'window_capture.py',
+        src_path / 'gui.py',
+        src_path / 'region_selector.py',
     ]
     
     all_valid = True

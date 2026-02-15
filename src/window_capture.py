@@ -152,12 +152,33 @@ class WindowCapture:
             # Apply crop if specified
             if self.crop_region:
                 x, y, w, h = self.crop_region
-                # Ensure crop is within bounds
-                x = max(0, min(x, width - 1))
-                y = max(0, min(y, height - 1))
-                w = min(w, width - x)
-                h = min(h, height - y)
-                img = img[y:y+h, x:x+w]
+                
+                # Validate crop region is within bounds
+                if x >= width or y >= height:
+                    logger.warning(
+                        f"Crop region ({x}, {y}, {w}, {h}) is outside window bounds ({width}x{height}). "
+                        f"Skipping crop."
+                    )
+                elif x + w > width or y + h > height:
+                    # Crop region extends beyond bounds
+                    original_w, original_h = w, h
+                    x = max(0, min(x, width - 1))
+                    y = max(0, min(y, height - 1))
+                    w = min(w, width - x)
+                    h = min(h, height - y)
+                    
+                    # Check if resulting crop is significantly smaller than requested
+                    if w < original_w * 0.5 or h < original_h * 0.5:
+                        logger.warning(
+                            f"Crop region ({self.crop_region[0]}, {self.crop_region[1]}, "
+                            f"{self.crop_region[2]}, {self.crop_region[3]}) significantly exceeds "
+                            f"window bounds ({width}x{height}). Adjusted to ({x}, {y}, {w}, {h})."
+                        )
+                    
+                    img = img[y:y+h, x:x+w]
+                else:
+                    # Crop region is fully within bounds
+                    img = img[y:y+h, x:x+w]
             
             # Cleanup
             saveDC.DeleteDC()
