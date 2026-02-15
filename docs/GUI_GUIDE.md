@@ -51,13 +51,43 @@ python gui.py
 3. **Select your MCDU window** from the list
    - Look for MCDU pop-out window title
    - May include "MCDU", "Microsoft Flight Simulator", etc.
-4. Click **"Start Scraper"**
+4. **[Optional] Click "Select Screen Area"** to crop to exact MCDU screen
+   - Opens a preview dialog showing the captured window
+   - Drag the selection box to frame just the MCDU screen (exclude borders/title bar)
+   - Resize by dragging corner handles
+   - Click OK to save the selection
+   - The crop coordinates will be displayed in green
+5. Click **"Start Scraper"**
 
 **Tips**:
 - Pop out MCDU in MSFS first (right-click MCDU → "Pop Out")
 - The window list shows visible windows with titles
 - MSFS-related windows are shown first
 - Click "Refresh Windows" if you don't see your window
+- Use "Select Screen Area" to exclude window borders and UI elements from capture
+
+### Screen Area Selection (NEW)
+
+The **"Select Screen Area"** button allows you to visually define which part of the captured window contains the actual MCDU screen, excluding borders, title bars, and other UI elements.
+
+**How to use**:
+1. Select a window from the dropdown
+2. Click "Select Screen Area"
+3. A preview window opens showing the captured window
+4. **Drag** to move the selection box
+5. **Drag corners** to resize the selection
+6. The selected area is highlighted; non-selected areas are darkened
+7. Current coordinates are shown at the bottom
+8. Click **OK** to save, **Cancel** to discard, or **Reset** to start over
+
+**Benefits**:
+- Precisely frame the MCDU screen within the pop-out window
+- Exclude window borders and decorations
+- Exclude any UI elements outside the actual MCDU display
+- Visual feedback makes it easy to get exact positioning
+- Coordinates are automatically saved and used when scraper starts
+
+**Example use case**: If your MCDU pop-out window is 500x300 pixels but the actual MCDU screen is only 480x280 pixels (with 10px borders), use "Select Screen Area" to crop to just the 480x280 screen portion.
 
 ### Control Panel
 
@@ -114,6 +144,10 @@ python gui.py
    - Select "Window Capture" mode
    - Click "Refresh Windows"
    - Select MCDU pop-out window from dropdown
+   - **[Recommended]** Click "Select Screen Area" to crop to exact MCDU screen
+     - Drag selection box to frame the MCDU screen
+     - Exclude window borders and title bar
+     - Click OK to save
 
 6. **Start Scraper**
    - Click "Start Scraper"
@@ -126,8 +160,9 @@ python gui.py
 2. Start MobiFlight
 3. Run GUI: `run_gui.bat`
 4. Select MCDU window
-5. Click "Start Scraper"
-6. Minimize or hide MCDU window as needed
+5. **[Optional]** Adjust screen area if needed
+6. Click "Start Scraper"
+7. Minimize or hide MCDU window as needed
 7. When done, click "Stop Scraper"
 
 ## Advantages of Window Capture
@@ -223,6 +258,37 @@ pip install pywin32
 4. Check if window handle became invalid
 5. Restart scraper
 
+### Screen Area Selection Not Working
+
+**Problem**: "Select Screen Area" button doesn't work or shows error
+
+**Solutions**:
+1. Ensure a window is selected in the dropdown first
+2. Make sure the selected window still exists
+3. Try refreshing the window list
+4. Check if the window is accessible (not protected/system window)
+
+### Wrong Content After Screen Area Selection
+
+**Problem**: After selecting screen area, wrong content is shown on WinWing CDU
+
+**Solutions**:
+1. Re-open "Select Screen Area" and verify the selection
+2. Make sure the selection box frames the MCDU screen properly
+3. Exclude window borders, title bars, and decorations
+4. Check that the crop coordinates shown are correct
+5. Try resetting and selecting again
+
+### Screen Area Selection Preview is Blank
+
+**Problem**: Preview window shows blank or black image
+
+**Solutions**:
+1. Verify the selected window is actually visible
+2. Some windows may be protected from screen capture
+3. Try a different window or use Screen Region mode instead
+4. Check Windows permissions for screen capture
+
 ## Advanced Features
 
 ### Using Config File with GUI
@@ -253,7 +319,15 @@ None currently implemented. Future enhancement opportunity.
 - Don't close pop-out during flight - minimize instead
 - If you move window, scraper continues to work (Window Capture mode)
 
-### 2. Performance
+### 2. Screen Area Selection
+
+- **Always use "Select Screen Area"** when first setting up
+- Frame only the MCDU screen itself, not borders or title bar
+- Check the preview carefully before clicking OK
+- Save your configuration if you'll use the same window size again
+- If window size changes, re-select the screen area
+
+### 3. Performance
 
 - Default 30 FPS is recommended
 - Lower FPS in config if CPU usage is high

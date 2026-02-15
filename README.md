@@ -6,6 +6,7 @@ A production-ready Python application that captures the Microsoft Flight Simulat
 
 - **Real-time Screen Capture**: Captures MCDU display at 30 FPS using MSS library
 - **Window-Specific Capture**: NEW! Capture specific windows even when minimized or behind other windows (Windows only)
+- **Visual Screen Area Selection**: NEW! Interactive preview to select exact MCDU screen area, excluding borders and UI elements
 - **GUI Interface**: NEW! Easy-to-use graphical interface with window selection and log viewing
 - **Character Recognition**: Extracts 24x14 character grid with color and font size detection
 - **MobiFlight Compatible**: Sends data in exact MobiFlight format to WinWing CDU
@@ -107,11 +108,13 @@ run_gui.bat
 5. **In the GUI**:
    - Select "Window Capture" mode
    - Click "Refresh Windows" and select your MCDU pop-out window from the dropdown
+   - **[Recommended]** Click "Select Screen Area" to visually crop to exact MCDU screen (excludes borders)
    - Click "Start Scraper"
    - Monitor logs in the GUI
 
 **Benefits of GUI**:
 - ✅ No need to manually configure screen coordinates
+- ✅ Visual screen area selection with interactive preview
 - ✅ Works even when MCDU window is minimized or behind other windows
 - ✅ Easy window selection from dropdown
 - ✅ Live log viewing
