@@ -2,18 +2,48 @@
 
 Get up and running with the MSFS A330 WinWing MCDU Scraper in 5 minutes!
 
+## NEW: GUI Mode (Easiest!) 🎉
+
+**The simplest way to use this scraper** - no configuration files needed!
+
+### What's New?
+
+- **Window Capture**: Select MCDU window from dropdown - works even when minimized!
+- **GUI Interface**: Easy point-and-click interface with live logs
+- **No Coordinates**: No need to manually configure screen positions
+- **Works Behind Windows**: Keep MCDU minimized or behind other applications
+
+### 2-Minute Quick Start with GUI
+
+1. **Pop out MCDU** in MSFS (right-click → "Pop Out")
+2. **Start MobiFlight** WinWing MCDU Connector
+3. **Run GUI**: Double-click `run_gui.bat` (Windows)
+4. **Select Window** from dropdown (look for "MCDU" or "Flight Simulator")
+5. **Click "Start Scraper"** → Done!
+
+Your MCDU window can now be minimized or behind other windows - it will still work! 🎉
+
+---
+
 ## How Does This Work?
 
-**Simple explanation**: This application takes screenshots of your MSFS MCDU display and sends the content to your WinWing CDU hardware.
+**Simple explanation**: This application captures your MSFS MCDU display and sends the content to your WinWing CDU hardware.
 
-**The Process**:
+### Two Capture Methods
+
+**NEW - Window Capture** (Recommended):
+1. You select the MCDU window from a dropdown
+2. The scraper captures that specific window 30 times per second
+3. Works even when window is minimized or behind other windows
+4. It sends this information to your WinWing CDU via network connection
+5. Your physical WinWing CDU displays exactly what MSFS shows
+
+**Original - Screen Region Capture**:
 1. You tell the scraper where your MCDU is on screen (coordinates in config.yaml)
 2. The scraper captures that screen area 30 times per second
 3. It reads the characters, colors, and detects what's displayed
 4. It sends this information to your WinWing CDU via network connection
 5. Your physical WinWing CDU displays exactly what MSFS shows
-
-**Important**: The scraper captures whatever is on your screen at the coordinates you specify - it doesn't connect to MSFS directly. Think of it like taking 30 screenshots per second of a specific part of your screen.
 
 ## 2D Panel vs Pop-Out MCDU
 

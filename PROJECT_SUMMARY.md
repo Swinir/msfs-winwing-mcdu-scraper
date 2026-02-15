@@ -14,6 +14,8 @@ A production-ready Python application that captures the Microsoft Flight Simulat
 ## Key Features
 
 ✅ **Real-time Screen Capture** - 30 FPS capture using MSS library  
+✅ **Window-Specific Capture** - NEW! Capture windows even when minimized (Windows)  
+✅ **GUI Interface** - NEW! Easy-to-use graphical interface with window selection  
 ✅ **Character Recognition** - OCR-based 24x14 grid extraction  
 ✅ **Color Detection** - 8 color support (white, cyan, green, amber, etc.)  
 ✅ **Font Size Detection** - Automatic large/small font handling  
@@ -21,16 +23,16 @@ A production-ready Python application that captures the Microsoft Flight Simulat
 ✅ **Dual MCDU Support** - Captain and Co-Pilot MCDUs simultaneously  
 ✅ **Robust Reconnection** - Automatic WebSocket retry logic  
 ✅ **Fully Configurable** - YAML-based configuration  
-✅ **Production Logging** - Comprehensive error tracking  
-✅ **Cross-platform** - Windows primary (MSS), Linux/Mac compatible
+✅ **Production Logging** - Comprehensive error tracking with GUI viewer  
+✅ **Cross-platform** - Windows primary (MSS + Window Capture), Linux/Mac compatible
 
 ## Project Statistics
 
-- **Source Files**: 5 Python modules
-- **Lines of Code**: ~1,500 lines
-- **Documentation**: 4 detailed guides
+- **Source Files**: 7 Python modules (including GUI)
+- **Lines of Code**: ~2,500 lines
+- **Documentation**: 7 detailed guides
 - **Tests**: Unit tests for core components
-- **Dependencies**: 7 Python packages
+- **Dependencies**: 8 Python packages
 
 ## File Structure
 
@@ -44,10 +46,27 @@ msfs-winwing-mcdu-scraper/
 ├── 📄 config.yaml.example    - Example configuration
 ├── 🔧 validate.py            - Code validation script
 ├── 🔧 demo.py                - Demo/example script
-├── 🔧 run.bat                - Windows launcher
-├── 🔧 run.sh                 - Linux/Mac launcher
+├── 🔧 run.bat                - Windows launcher (CLI)
+├── 🔧 run.sh                 - Linux/Mac launcher (CLI)
+├── 🔧 run_gui.bat            - Windows GUI launcher (NEW)
+├── 🔧 run_gui.sh             - Linux/Mac GUI launcher (NEW)
 │
 ├── 📁 src/                   - Source code
+   ├── __init__.py
+   ├── main.py              - Application entry point (CLI)
+   ├── gui.py               - GUI application (NEW)
+   ├── config.py            - Configuration management
+   ├── screen_capture.py    - Screen capture using MSS
+   ├── window_capture.py    - Window capture (NEW)
+   ├── mcdu_parser.py       - Image processing & OCR
+   └── mobiflight_client.py - WebSocket client
+│
+├── 📁 docs/                  - Documentation
+   ├── SETUP.md             - Detailed setup guide
+   ├── CALIBRATION.md       - Screen calibration guide
+   ├── VISUAL_GUIDE.md      - Visual setup walkthrough
+   ├── GUI_GUIDE.md         - GUI usage guide (NEW)
+   └── GUI_PREVIEW.md       - GUI interface preview (NEW)
 │   ├── __init__.py
 │   ├── main.py              - Application entry point
 │   ├── config.py            - Configuration management
