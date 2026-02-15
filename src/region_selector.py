@@ -311,9 +311,9 @@ class RegionSelectorDialog:
         if corner:
             # Change cursor for resize
             if corner in ['nw', 'se']:
-                self.canvas.config(cursor="nwse-resize")
+                self.canvas.config(cursor="top_left_corner")
             else:
-                self.canvas.config(cursor="nesw-resize")
+                self.canvas.config(cursor="top_right_corner")
         elif self._is_inside_selection(event.x, event.y):
             self.canvas.config(cursor="fleur")
         else:

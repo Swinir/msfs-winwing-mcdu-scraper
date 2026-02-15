@@ -142,6 +142,14 @@ class MCDUScraperGUI:
             text="Refresh Windows", 
             command=self.refresh_windows
         ).grid(row=0, column=2, padx=5)
+
+        self.show_all_windows_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            self.window_frame,
+            text="Show all windows",
+            variable=self.show_all_windows_var,
+            command=self.refresh_windows
+        ).grid(row=0, column=3, padx=10)
         
         # Screen area selection button (NEW)
         self.select_area_button = ttk.Button(
@@ -221,15 +229,18 @@ class MCDUScraperGUI:
         try:
             windows = WindowCapture.list_windows()
             
-            # Filter for likely MCDU windows
-            msfs_keywords = ['microsoft flight simulator', 'msfs', 'flight simulator', 'mcdu', 'airbus']
-            filtered_windows = [
-                (hwnd, title) for hwnd, title in windows
-                if any(keyword in title.lower() for keyword in msfs_keywords) or len(title) < 50
-            ]
+            if self.show_all_windows_var.get():
+                filtered_windows = windows
+            else:
+                # Filter for likely MCDU windows
+                msfs_keywords = ['microsoft flight simulator', 'msfs', 'flight simulator', 'mcdu', 'airbus']
+                filtered_windows = [
+                    (hwnd, title) for hwnd, title in windows
+                    if any(keyword in title.lower() for keyword in msfs_keywords) or len(title) < 50
+                ]
             
-            if not filtered_windows:
-                filtered_windows = windows[:20]  # Show first 20 if no matches
+                if not filtered_windows:
+                    filtered_windows = windows[:20]  # Show first 20 if no matches
             
             self.window_list = filtered_windows
             window_titles = [f"{title} (HWND: {hwnd})" for hwnd, title in filtered_windows]
