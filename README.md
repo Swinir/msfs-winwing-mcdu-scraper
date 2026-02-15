@@ -5,6 +5,8 @@ A production-ready Python application that captures the Microsoft Flight Simulat
 ## Features
 
 - **Real-time Screen Capture**: Captures MCDU display at 30 FPS using MSS library
+- **Window-Specific Capture**: NEW! Capture specific windows even when minimized or behind other windows (Windows only)
+- **GUI Interface**: NEW! Easy-to-use graphical interface with window selection and log viewing
 - **Character Recognition**: Extracts 24x14 character grid with color and font size detection
 - **MobiFlight Compatible**: Sends data in exact MobiFlight format to WinWing CDU
 - **Dual MCDU Support**: Supports both Captain and Co-Pilot MCDUs simultaneously
@@ -64,6 +66,36 @@ Edit `config.yaml` with your screen positions (see [Configuration Guide](#config
 
 ## Quick Start
 
+### Option 1: Using GUI (Recommended for Easy Setup)
+
+1. **Start MSFS** and load the Airbus A330
+2. **Pop out MCDU** window (right-click MCDU → "Pop Out")
+3. **Start MobiFlight** WinWing MCDU Connector
+4. **Run the GUI**:
+
+```bash
+# Windows
+run_gui.bat
+
+# Linux/Mac
+./run_gui.sh
+```
+
+5. **In the GUI**:
+   - Select "Window Capture" mode
+   - Click "Refresh Windows" and select your MCDU pop-out window from the dropdown
+   - Click "Start Scraper"
+   - Monitor logs in the GUI
+
+**Benefits of GUI**:
+- ✅ No need to manually configure screen coordinates
+- ✅ Works even when MCDU window is minimized or behind other windows
+- ✅ Easy window selection from dropdown
+- ✅ Live log viewing
+- ✅ Simple start/stop controls
+
+### Option 2: Using Command Line (Original Method)
+
 1. **Start MSFS** and load the Airbus A330
 2. **Position MCDU** on screen where it can be captured
 3. **Start MobiFlight** WinWing MCDU Connector (should listen on `ws://localhost:8320`)
@@ -82,6 +114,27 @@ The application will:
 ## Frequently Asked Questions (FAQ)
 
 💡 **New to this?** Check out the [Visual Setup Guide](docs/VISUAL_GUIDE.md) for diagrams and step-by-step visuals!
+
+### Can I capture the MCDU even when it's minimized or behind other windows?
+
+**Yes!** With the new **Window Capture mode** (Windows only), you can:
+
+- Capture a specific MCDU pop-out window by its title
+- Keep working with other applications while MCDU is minimized
+- Have other windows on top of the MCDU without affecting capture
+- Use the GUI to easily select the correct window
+
+**How to use Window Capture**:
+
+1. Pop out the MCDU window in MSFS (right-click MCDU → "Pop Out")
+2. Run the GUI (`run_gui.bat`)
+3. Select "Window Capture" mode
+4. Choose your MCDU window from the dropdown
+5. Click "Start Scraper"
+
+The MCDU window can now be minimized, behind other windows, or even on a different desktop - the scraper will still capture it!
+
+**Note**: Window capture requires Windows OS and pywin32 library (installed automatically). For screen region capture (original method), see below.
 
 ### How does the screen capture work?
 
