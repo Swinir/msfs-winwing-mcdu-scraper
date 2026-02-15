@@ -2,6 +2,33 @@
 
 Get up and running with the MSFS A330 WinWing MCDU Scraper in 5 minutes!
 
+## How Does This Work?
+
+**Simple explanation**: This application takes screenshots of your MSFS MCDU display and sends the content to your WinWing CDU hardware.
+
+**The Process**:
+1. You tell the scraper where your MCDU is on screen (coordinates in config.yaml)
+2. The scraper captures that screen area 30 times per second
+3. It reads the characters, colors, and detects what's displayed
+4. It sends this information to your WinWing CDU via network connection
+5. Your physical WinWing CDU displays exactly what MSFS shows
+
+**Important**: The scraper captures whatever is on your screen at the coordinates you specify - it doesn't connect to MSFS directly. Think of it like taking 30 screenshots per second of a specific part of your screen.
+
+## 2D Panel vs Pop-Out MCDU
+
+You can capture the MCDU in two ways:
+
+### Option 1: 2D Cockpit Panel (Simple)
+- Just display the MCDU in your normal cockpit view
+- Configure where it appears on your screen
+- May shift if you move the camera
+
+### Option 2: Pop-Out Window (Recommended ⭐)
+- Right-click MCDU in MSFS → "Pop Out"
+- Position window consistently (same spot each time)
+- More reliable, easier to configure
+
 ## Prerequisites Checklist
 
 Before starting, ensure you have:

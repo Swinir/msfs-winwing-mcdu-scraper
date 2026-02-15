@@ -2,6 +2,30 @@
 
 This guide will help you accurately calibrate the screen region coordinates for capturing the MCDU display.
 
+## Understanding Screen Capture
+
+**How it works**: The scraper takes continuous screenshots of a specific rectangular area of your screen. It needs to know:
+- **Which monitor** to capture from
+- **Where on that monitor** the MCDU is located
+- **How big** the MCDU area is
+
+**Important**: The scraper doesn't "know" where your MCDU is - you must tell it the exact pixel coordinates.
+
+## 2D Panel vs Pop-Out MCDU
+
+### Using 2D Cockpit Panel
+The MCDU is displayed within your normal cockpit view:
+- **Pros**: No extra windows to manage
+- **Cons**: Position changes if you move camera or adjust view
+- **Best for**: Single static camera angle
+
+### Using Pop-Out MCDU (Recommended)
+Right-click MCDU → "Pop Out" creates a separate window:
+- **Pros**: Consistent position, doesn't move with camera
+- **Cons**: Extra window to manage
+- **Best for**: Reliability and ease of setup
+- **Tip**: Position pop-out window in a consistent spot (e.g., top-left of secondary monitor)
+
 ## Why Calibration is Important
 
 The scraper needs to know exactly where your MCDU is displayed on screen to capture it correctly. Wrong coordinates will result in:

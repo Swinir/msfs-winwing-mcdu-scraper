@@ -60,7 +60,7 @@ Add Tesseract to your PATH or update `pytesseract.pytesseract.tesseract_cmd` in 
 copy config.yaml.example config.yaml
 ```
 
-Edit `config.yaml` with your screen positions (see Configuration Guide below)
+Edit `config.yaml` with your screen positions (see [Configuration Guide](#configuration-guide) and [Visual Guide](docs/VISUAL_GUIDE.md))
 
 ## Quick Start
 
@@ -78,6 +78,127 @@ The application will:
 - Connect to WinWing CDU via WebSocket
 - Set the font to "AirbusThales"
 - Start capturing and displaying MCDU content at 30 FPS
+
+## Frequently Asked Questions (FAQ)
+
+💡 **New to this?** Check out the [Visual Setup Guide](docs/VISUAL_GUIDE.md) for diagrams and step-by-step visuals!
+
+### How does the screen capture work?
+
+The scraper **automatically captures whatever is displayed** at the screen coordinates you specify in `config.yaml`. It uses the MSS (Multi-Screen Screenshots) library to continuously grab a specific rectangular region of your screen at 30 FPS.
+
+**Important**: The scraper doesn't interact with MSFS directly - it simply takes screenshots of a screen region, just like taking a screenshot manually but 30 times per second.
+
+### Do I need to pop out the MCDU to a separate window?
+
+**Short answer**: No, but it's recommended.
+
+You have **two options**:
+
+#### Option 1: Use 2D Panel MCDU (Built-in View)
+- Display the MCDU using MSFS's built-in 2D cockpit panel
+- Configure `config.yaml` with the coordinates of where the MCDU appears in your cockpit view
+- **Pros**: Simple, no extra windows
+- **Cons**: Coordinates may change if you adjust camera angles or move the view
+
+#### Option 2: Use Pop-out MCDU Window (Recommended)
+- Right-click the MCDU in MSFS and select "Pop Out" to create a separate window
+- Position this window consistently (e.g., same spot on secondary monitor)
+- Configure `config.yaml` with the pop-out window's coordinates
+- **Pros**: Consistent position, easier to calibrate, more reliable
+- **Cons**: Requires managing an extra window
+
+**Recommendation**: Use pop-out MCDU for best results and easiest setup.
+
+### Do I need to specify which screen/monitor to use?
+
+**Yes**, you must specify the exact screen coordinates in `config.yaml`. The scraper needs to know:
+
+1. **Which monitor** - Specified by the `left` coordinate (X position)
+   - Primary monitor: `left` starts from 0
+   - Secondary monitor (right): `left` = primary width (e.g., 1920 for 1080p primary)
+   - Secondary monitor (left): `left` = negative value
+
+2. **Where on that monitor** - The exact pixel position and size
+   - `top`: Y coordinate (pixels from top of screen)
+   - `left`: X coordinate (pixels from left edge, accounting for monitor position)
+   - `width`: Width of MCDU region (typically 480 pixels)
+   - `height`: Height of MCDU region (typically 280 pixels)
+
+**Example for dual monitors**:
+```yaml
+# Primary monitor (1920x1080), MCDU in cockpit view
+screen_region:
+  top: 400
+  left: 800
+  width: 480
+  height: 280
+
+# Secondary monitor (1920x1080), pop-out MCDU at top-left
+screen_region:
+  top: 0
+  left: 1920    # Primary monitor width = 1920
+  width: 480
+  height: 280
+```
+
+### What happens if I configure the wrong coordinates?
+
+If coordinates are wrong, you'll see:
+- **Black/blank display** on WinWing CDU (capturing empty space)
+- **Wrong content** (capturing different part of screen)
+- **Incorrect characters** (partial MCDU capture)
+
+**Solution**: Use the calibration guide ([docs/CALIBRATION.md](docs/CALIBRATION.md)) to find correct coordinates.
+
+### How do I find the correct screen coordinates?
+
+See the detailed [Screen Calibration Guide](docs/CALIBRATION.md) for step-by-step instructions. Quick method:
+
+1. **Display your MCDU** (either 2D panel or pop-out)
+2. **Take a screenshot** (Win + Shift + S on Windows)
+3. **Open in Paint** or image editor
+4. **Hover over top-left corner** of MCDU → note X, Y coordinates
+5. **Measure MCDU size** → note width, height
+6. **Update config.yaml** with these values
+7. **Test**: Run `python demo.py` to verify (or see logs when running)
+
+### Does it work with VR?
+
+**Not directly**. The scraper captures from your flat monitor display, not the VR headset view. 
+
+**Workarounds**:
+- Use SteamVR/OpenXR desktop mirror and capture from that
+- Use MSFS's "2D Panel Pop-out" feature even while in VR
+- Position pop-out MCDU on your monitor while flying in VR
+
+### Can I capture both Captain and Co-Pilot MCDUs?
+
+**Yes!** Enable both in `config.yaml`:
+
+```yaml
+mcdu:
+  captain:
+    enabled: true
+    screen_region: { top: 400, left: 800, width: 480, height: 280 }
+  
+  copilot:
+    enabled: true
+    screen_region: { top: 400, left: 1400, width: 480, height: 280 }
+```
+
+Both MCDUs will be captured and sent to their respective WinWing CDU units simultaneously.
+
+### Why do I need to calibrate screen coordinates?
+
+The MCDU can appear at different positions depending on:
+- Your screen resolution (1080p, 1440p, 4K, etc.)
+- Number of monitors
+- MSFS window mode (fullscreen, windowed, borderless)
+- Camera view/angle (for 2D panel)
+- Pop-out window position
+
+Because of this variability, **you must tell the scraper exactly where to look** by providing precise pixel coordinates.
 
 ## Configuration Guide
 
@@ -151,38 +272,66 @@ msfs-winwing-mcdu-scraper/
 
 ## How It Works
 
+### Overview
+
+The scraper acts as a "bridge" between MSFS and your WinWing CDU hardware:
+
+1. **Screen Capture**: Takes screenshots of a specific screen region 30 times per second
+2. **Image Processing**: Analyzes the captured image to extract MCDU content
+3. **Data Transmission**: Sends formatted data to WinWing CDU via WebSocket
+
+**Key Point**: The scraper doesn't interact with MSFS directly - it simply captures and processes whatever is displayed at the configured screen coordinates.
+
+### Step-by-Step Workflow
+
+```
+1. You configure screen coordinates in config.yaml
+   ↓
+2. MSFS displays MCDU (2D panel or pop-out window)
+   ↓
+3. Scraper captures that screen region (30 FPS)
+   ↓
+4. Image is analyzed: characters, colors, font sizes extracted
+   ↓
+5. Data sent to WinWing CDU via WebSocket
+   ↓
+6. WinWing CDU displays the MCDU content
+   ↓
+7. Loop repeats 30 times per second
+```
+
 ### Architecture
 
 ```
 ┌─────────────┐
 │    MSFS     │
-│  A330 MCDU  │
+│  A330 MCDU  │  ← You display this (2D panel or pop-out)
 └──────┬──────┘
-       │
+       │ (Displayed on your screen at configured coordinates)
        ▼
 ┌─────────────────┐
-│  Screen Capture │  (MSS Library)
-│   480x280 px    │
+│  Screen Capture │  ← MSS Library captures this region
+│   480x280 px    │     (whatever is at top/left/width/height)
 └──────┬──────────┘
        │
        ▼
 ┌─────────────────┐
-│  MCDU Parser    │  (24x14 Grid)
-│  - OCR (Tesseract)
-│  - Color Detection
-│  - Font Size
+│  MCDU Parser    │  ← Analyzes the captured image
+│  - OCR (Tesseract)  │     - Detects characters (A, B, 1, 2, etc.)
+│  - Color Detection  │     - Detects colors (white, cyan, green, etc.)
+│  - Font Size        │     - Detects size (large/small)
 └──────┬──────────┘
        │
        ▼
 ┌─────────────────┐
-│ MobiFlight      │  (WebSocket)
-│ JSON Format     │
+│ MobiFlight      │  ← Formats and sends via WebSocket
+│ JSON Format     │     (to localhost:8320)
 │ [char, color, size]
 └──────┬──────────┘
        │
        ▼
 ┌─────────────────┐
-│  WinWing CDU    │  (Hardware)
+│  WinWing CDU    │  ← Your physical hardware displays it
 │   Display       │
 └─────────────────┘
 ```
