@@ -31,13 +31,15 @@ class WindowCapture:
     Works even when window is minimized or behind other windows (Windows only)
     """
     
-    def __init__(self, window_title: Optional[str] = None, window_handle: Optional[int] = None):
+    def __init__(self, window_title: Optional[str] = None, window_handle: Optional[int] = None, 
+                 crop_region: Optional[Tuple[int, int, int, int]] = None):
         """
         Initialize window capture
         
         Args:
             window_title: Title of the window to capture (will search for partial match)
             window_handle: Direct window handle (HWND) if known
+            crop_region: Optional crop region (x, y, width, height) to extract from captured window
         """
         if not WINDOWS_AVAILABLE:
             raise RuntimeError(
@@ -47,6 +49,7 @@ class WindowCapture:
         
         self.window_title = window_title
         self.hwnd = window_handle
+        self.crop_region = crop_region
         
         if not self.hwnd and window_title:
             self.hwnd = self._find_window_by_title(window_title)
@@ -60,6 +63,10 @@ class WindowCapture:
         # Get actual window title
         self.actual_title = win32gui.GetWindowText(self.hwnd)
         logger.info(f"Window capture initialized for: {self.actual_title} (HWND: {self.hwnd})")
+        if self.crop_region:
+            logger.info(f"Crop region set: x={self.crop_region[0]}, y={self.crop_region[1]}, "
+                       f"w={self.crop_region[2]}, h={self.crop_region[3]}")
+
     
     @staticmethod
     def _find_window_by_title(title: str) -> Optional[int]:
@@ -142,6 +149,16 @@ class WindowCapture:
             # Convert BGRA to RGB
             img = img[:, :, [2, 1, 0]]  # BGR to RGB (drop alpha)
             
+            # Apply crop if specified
+            if self.crop_region:
+                x, y, w, h = self.crop_region
+                # Ensure crop is within bounds
+                x = max(0, min(x, width - 1))
+                y = max(0, min(y, height - 1))
+                w = min(w, width - x)
+                h = min(h, height - y)
+                img = img[y:y+h, x:x+w]
+            
             # Cleanup
             saveDC.DeleteDC()
             mfcDC.DeleteDC()
@@ -174,6 +191,20 @@ class WindowCapture:
         if not WINDOWS_AVAILABLE:
             return False
         return win32gui.IsWindow(self.hwnd)
+    
+    def set_crop_region(self, crop_region: Optional[Tuple[int, int, int, int]]):
+        """
+        Set or update the crop region
+        
+        Args:
+            crop_region: Crop region (x, y, width, height) or None to disable cropping
+        """
+        self.crop_region = crop_region
+        if crop_region:
+            logger.info(f"Crop region updated: x={crop_region[0]}, y={crop_region[1]}, "
+                       f"w={crop_region[2]}, h={crop_region[3]}")
+        else:
+            logger.info("Crop region cleared")
     
     def close(self):
         """Close window capture session"""

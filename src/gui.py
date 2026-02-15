@@ -21,6 +21,7 @@ from window_capture import WindowCapture, WINDOWS_AVAILABLE
 from screen_capture import ScreenCapture
 from mcdu_parser import MCDUParser
 from mobiflight_client import MobiFlightClient
+from region_selector import RegionSelectorDialog
 
 
 class QueueHandler(logging.Handler):
@@ -138,7 +139,23 @@ class MCDUScraperGUI:
             command=self.refresh_windows
         ).grid(row=0, column=2, padx=5)
         
+        # Screen area selection button (NEW)
+        self.select_area_button = ttk.Button(
+            self.window_frame,
+            text="Select Screen Area",
+            command=self.select_screen_area,
+            state='normal'
+        )
+        self.select_area_button.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+        
+        # Crop region info label (NEW)
+        self.crop_info_label = ttk.Label(self.window_frame, text="No crop region set", font=('Arial', 8))
+        self.crop_info_label.grid(row=1, column=2, padx=5, sticky=tk.W)
+        
         self.window_frame.columnconfigure(1, weight=1)
+        
+        # Store crop region (NEW)
+        self.crop_region = None
         
         # Status and Control
         control_frame = ttk.LabelFrame(main_frame, text="Control", padding="10")
@@ -221,6 +238,46 @@ class MCDUScraperGUI:
         except Exception as e:
             self.log(f"Error refreshing windows: {e}", level="ERROR")
     
+    def select_screen_area(self):
+        """Open dialog to visually select screen area from window"""
+        if not WINDOWS_AVAILABLE:
+            messagebox.showerror("Error", "Window capture not available on this platform")
+            return
+        
+        # Get selected window
+        selection = self.window_combo.current()
+        if selection < 0:
+            messagebox.showerror("Error", "Please select a window first")
+            return
+        
+        try:
+            hwnd, title = self.window_list[selection]
+            self.log(f"Capturing preview from: {title}")
+            
+            # Capture window for preview
+            temp_capture = WindowCapture(window_handle=hwnd)
+            preview_image = temp_capture.capture()
+            temp_capture.close()
+            
+            # Open region selector dialog
+            dialog = RegionSelectorDialog(self.root, preview_image, self.crop_region)
+            result = dialog.show()
+            
+            if result:
+                self.crop_region = result
+                x, y, w, h = result
+                self.crop_info_label.config(
+                    text=f"Crop: X={x}, Y={y}, W={w}, H={h}",
+                    foreground='green'
+                )
+                self.log(f"Screen area selected: X={x}, Y={y}, Width={w}, Height={h}")
+            else:
+                self.log("Screen area selection cancelled")
+                
+        except Exception as e:
+            self.log(f"Error selecting screen area: {e}", level="ERROR")
+            messagebox.showerror("Error", f"Failed to capture window: {e}")
+    
     def start_scraper(self):
         """Start the MCDU scraper"""
         if self.running:
@@ -248,7 +305,13 @@ class MCDUScraperGUI:
                 
                 hwnd, title = self.window_list[selection]
                 self.log(f"Starting scraper with window: {title}")
-                self.capture = WindowCapture(window_handle=hwnd)
+                
+                # Create window capture with optional crop region
+                self.capture = WindowCapture(window_handle=hwnd, crop_region=self.crop_region)
+                
+                if self.crop_region:
+                    x, y, w, h = self.crop_region
+                    self.log(f"Using crop region: X={x}, Y={y}, Width={w}, Height={h}")
             else:
                 # Use screen region from config
                 if not self.config.get_captain_enabled():
