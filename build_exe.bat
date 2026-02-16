@@ -25,6 +25,7 @@ venv\Scripts\pyinstaller --name "MSFS-MCDU-Scraper-GUI" ^
     --onefile ^
     --windowed ^
     --icon=NONE ^
+    --paths src ^
     --add-data "config.yaml.example;." ^
     --add-data "docs;docs" ^
     --hidden-import=PIL ^
@@ -52,6 +53,7 @@ venv\Scripts\pyinstaller --name "MSFS-MCDU-Scraper-CLI" ^
     --onefile ^
     --console ^
     --icon=NONE ^
+    --paths src ^
     --add-data "config.yaml.example;." ^
     --hidden-import=PIL ^
     --hidden-import=numpy ^

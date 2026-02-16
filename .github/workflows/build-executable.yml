@@ -37,6 +37,7 @@ jobs:
           --onefile `
           --windowed `
           --icon=NONE `
+          --paths src `
           --add-data "config.yaml.example;." `
           --add-data "docs;docs" `
           --hidden-import=PIL `
@@ -57,6 +58,7 @@ jobs:
           --onefile `
           --console `
           --icon=NONE `
+          --paths src `
           --add-data "config.yaml.example;." `
           --hidden-import=PIL `
           --hidden-import=numpy `
