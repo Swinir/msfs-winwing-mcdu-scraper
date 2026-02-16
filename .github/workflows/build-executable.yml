@@ -20,11 +20,6 @@ jobs:
       with:
         python-version: '3.11'
     
-    - name: Install Tesseract OCR
-      run: |
-        choco install tesseract -y
-        echo "C:\Program Files\Tesseract-OCR" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-    
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
@@ -49,7 +44,6 @@ jobs:
           --hidden-import=win32ui `
           --hidden-import=win32con `
           --hidden-import=win32api `
-          --collect-all pytesseract `
           src/gui.py
     
     - name: Build CLI Executable
@@ -64,7 +58,6 @@ jobs:
           --hidden-import=numpy `
           --hidden-import=cv2 `
           --hidden-import=yaml `
-          --collect-all pytesseract `
           src/main.py
     
     - name: Package Release
@@ -103,7 +96,6 @@ jobs:
         
         ## Requirements
         - Windows 10/11
-        - Tesseract OCR installed (download from: https://github.com/UB-Mannheim/tesseract/wiki)
         - MobiFlight WinWing MCDU Connector running
         - MSFS 2020/2024 with Airbus A330
         - WinWing CDU hardware
@@ -114,7 +106,6 @@ jobs:
         - See docs/CALIBRATION.md for screen setup
         
         ## Troubleshooting
-        - If Tesseract errors occur, install Tesseract OCR
         - For connection errors, ensure MobiFlight is running on port 8320
         - Check logs in the GUI or console output
         
@@ -145,13 +136,11 @@ jobs:
           
           ## Quick Start
           1. Download and extract MSFS-MCDU-Scraper-Windows.zip
-          2. Install Tesseract OCR: https://github.com/UB-Mannheim/tesseract/wiki
-          3. Run MSFS-MCDU-Scraper-GUI.exe
-          4. Follow the on-screen instructions
+          2. Run MSFS-MCDU-Scraper-GUI.exe
+          3. Follow the on-screen instructions
           
           ## Requirements
           - Windows 10/11
-          - Tesseract OCR
           - MobiFlight WinWing MCDU Connector
           - MSFS with Airbus A330
           - WinWing CDU hardware

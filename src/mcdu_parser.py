@@ -1,26 +1,22 @@
 """
 MCDU parser for extracting character grid from screen captures.
 
-Uses **EasyOCR** (deep-learning CRNN) as the primary OCR engine for much
-better accuracy on the small, coloured MCDU text.  Falls back to Tesseract
-or a contour-based heuristic when EasyOCR is not installed.
+Uses **EasyOCR** (deep-learning CRNN) as the OCR engine.  Falls back to a
+contour-based heuristic when EasyOCR is not installed.
 
 Colour and font-size are detected per-cell via pixel analysis.
 """
 
-import os
-import sys
 import time
 import numpy as np
 import cv2
 import logging
-from concurrent.futures import ThreadPoolExecutor
 from typing import List, Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# OCR engine priority:  EasyOCR  >  Tesseract  >  contour-only
+# OCR engine:  EasyOCR  (contour-only fallback if not installed)
 # ---------------------------------------------------------------------------
 _EASYOCR_AVAILABLE = False
 _easyocr_reader = None          # singleton, created on first use
@@ -28,33 +24,12 @@ _easyocr_reader = None          # singleton, created on first use
 try:
     import easyocr as _easyocr_mod
     _EASYOCR_AVAILABLE = True
-    logger.info("EasyOCR available — using deep-learning OCR (best accuracy)")
+    logger.info("EasyOCR available — using deep-learning OCR")
 except ImportError:
-    logger.info("EasyOCR not installed. Trying Tesseract…")
-
-_TESSERACT_AVAILABLE = False
-if not _EASYOCR_AVAILABLE:
-    try:
-        import pytesseract
-
-        if sys.platform == 'win32':
-            _default_paths = [
-                r"C:\Program Files\Tesseract-OCR\tesseract.exe",
-                r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
-            ]
-            for _p in _default_paths:
-                if os.path.isfile(_p):
-                    pytesseract.pytesseract.tesseract_cmd = _p
-                    break
-
-        pytesseract.get_tesseract_version()
-        _TESSERACT_AVAILABLE = True
-        logger.info("Tesseract OCR available — using row-based recognition")
-    except Exception:
-        logger.info(
-            "No OCR engine found — using contour-only fallback. "
-            "Install EasyOCR (pip install easyocr) or Tesseract for better accuracy."
-        )
+    logger.info(
+        "EasyOCR not installed — using contour-only fallback. "
+        "Install EasyOCR (pip install easyocr) for better accuracy."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -374,45 +349,6 @@ class MCDUParser:
             logger.debug(f"EasyOCR row failed: {e}")
             return []
 
-    # ------------------------------------------------------------------
-    #  Per-row Tesseract OCR (fallback)
-    # ------------------------------------------------------------------
-    def _ocr_row_tesseract(self, row_img: np.ndarray) -> str:
-        """
-        Run Tesseract on a single row image using --psm 7 (single line).
-        Returns the raw OCR string.
-        """
-        try:
-            # Use max-channel so coloured text keeps full brightness.
-            gray = np.max(row_img, axis=2)
-            ink_threshold = self.INK_THRESHOLD + self._bg_floor
-            _, binary = cv2.threshold(gray, ink_threshold, 255,
-                                      cv2.THRESH_BINARY)
-
-            scale = 2
-            upscaled = cv2.resize(
-                binary,
-                (binary.shape[1] * scale, binary.shape[0] * scale),
-                interpolation=cv2.INTER_NEAREST,
-            )
-
-            pad = 10
-            padded = cv2.copyMakeBorder(
-                upscaled, pad, pad, pad, pad,
-                cv2.BORDER_CONSTANT, value=0,
-            )
-
-            config = (
-                '--psm 7 '
-                '-c tessedit_char_whitelist='
-                'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+-*/.<>[]() '
-            )
-            text = pytesseract.image_to_string(padded, config=config).strip()
-            return text
-        except Exception as e:
-            logger.debug(f"Row OCR failed: {e}")
-            return ""
-
     def _map_positions_to_cells(self, char_positions: list) -> List[Optional[str]]:
         """
         Map EasyOCR characters (with x-positions) to the 24-column grid.
@@ -438,40 +374,8 @@ class MCDUParser:
 
         return cell_chars
 
-    def _map_text_to_cells(self, text: str, row: int) -> List[Optional[str]]:
-        """
-        Map OCR text to the 24-column grid for a given row.
-
-        Uses brightness analysis to find non-empty columns, then aligns
-        the OCR characters (with spaces stripped) left-to-right.
-        """
-        cell_chars: List[Optional[str]] = [None] * self.columns
-
-        # Find which columns in this row are non-empty
-        non_empty_cols = []
-        for col in range(self.columns):
-            cell = self.extract_cell(row, col)
-            if not self.is_empty_cell(cell):
-                non_empty_cols.append(col)
-
-        if not text or not non_empty_cols:
-            return cell_chars
-
-        # Strip spaces — Tesseract inserts them between monospaced chars
-        chars = list(text.replace(" ", ""))
-
-        # Align characters to non-empty columns
-        for i, col in enumerate(non_empty_cols):
-            if i < len(chars):
-                c = chars[i]
-                cell_chars[col] = c.upper() if c.isalnum() else c
-            else:
-                cell_chars[col] = " "
-
-        return cell_chars
-
     # ------------------------------------------------------------------
-    #  Single-cell Tesseract (legacy fallback – slow)
+    #  Single-cell contour fallback
     # ------------------------------------------------------------------
     def detect_character(self, cell: np.ndarray) -> Optional[str]:
         """Detect a single cell's character (used only in contour-only mode)."""
@@ -608,8 +512,7 @@ class MCDUParser:
         t0 = time.perf_counter()
         message_data: List = []
 
-        use_ocr = _EASYOCR_AVAILABLE or _TESSERACT_AVAILABLE
-        if not use_ocr:
+        if not _EASYOCR_AVAILABLE:
             # ---- Slow path: contour-only fallback (no OCR engine) ----
             for row in range(self.rows):
                 for col in range(self.columns):
@@ -645,63 +548,51 @@ class MCDUParser:
                 non_empty_rows.append(row)
                 row_images[row] = self._extract_row_image(row)
 
-        # ---- Choose OCR engine ----
-        if _EASYOCR_AVAILABLE:
-            # --- Row-level change detection (skip unchanged rows) ---
-            changed_rows = []
-            cached_rows: dict = {}
-            for row in non_empty_rows:
-                rim = row_images[row]
-                if row in _prev_row_imgs:
-                    prev = _prev_row_imgs[row]
-                    if prev.shape == rim.shape:
-                        mse = float(np.mean(
-                            (rim.astype(np.float32) - prev.astype(np.float32)) ** 2
-                        ))
-                        if mse < _ROW_CHANGE_MSE:
-                            cached_rows[row] = _prev_row_ocr[row]
-                            continue
-                changed_rows.append(row)
+        # ---- EasyOCR with row-level change detection ----
+        changed_rows = []
+        cached_rows: dict = {}
+        for row in non_empty_rows:
+            rim = row_images[row]
+            if row in _prev_row_imgs:
+                prev = _prev_row_imgs[row]
+                if prev.shape == rim.shape:
+                    mse = float(np.mean(
+                        (rim.astype(np.float32) - prev.astype(np.float32)) ** 2
+                    ))
+                    if mse < _ROW_CHANGE_MSE:
+                        cached_rows[row] = _prev_row_ocr[row]
+                        continue
+            changed_rows.append(row)
 
-            ocr_results: dict = dict(cached_rows)
+        ocr_results: dict = dict(cached_rows)
 
-            if not changed_rows:
-                pass  # everything cached
-            elif len(changed_rows) >= 8:
-                # Many rows changed — single full-image OCR (1 inference
-                # call instead of N separate ones).
-                full = self._ocr_full_image_easyocr()
-                for row in changed_rows:
-                    result = full.get(row, [])
-                    ocr_results[row] = result
-                    _prev_row_imgs[row] = row_images[row].copy()
-                    _prev_row_ocr[row] = result
-            else:
-                # Few rows changed — per-row OCR
-                for row in changed_rows:
-                    is_large = not self.is_small_font(row)
-                    result = self._ocr_row_easyocr(row_images[row],
-                                                   large_font=is_large)
-                    ocr_results[row] = result
-                    _prev_row_imgs[row] = row_images[row].copy()
-                    _prev_row_ocr[row] = result
-
-            n_cached = len(cached_rows)
-            n_ocr = len(changed_rows)
-            if n_cached or n_ocr:
-                logger.debug(
-                    f"EasyOCR: {n_ocr} rows OCR'd, {n_cached} cached"
-                )
+        if not changed_rows:
+            pass  # everything cached
+        elif len(changed_rows) >= 8:
+            # Many rows changed — single full-image OCR (1 inference
+            # call instead of N separate ones).
+            full = self._ocr_full_image_easyocr()
+            for row in changed_rows:
+                result = full.get(row, [])
+                ocr_results[row] = result
+                _prev_row_imgs[row] = row_images[row].copy()
+                _prev_row_ocr[row] = result
         else:
-            # Tesseract: thread-pool (each call is an independent process)
-            ocr_results = {}
-            with ThreadPoolExecutor(max_workers=min(len(non_empty_rows) or 1, 8)) as pool:
-                futures = {
-                    row: pool.submit(self._ocr_row_tesseract, row_images[row])
-                    for row in non_empty_rows
-                }
-                for row, fut in futures.items():
-                    ocr_results[row] = fut.result()
+            # Few rows changed — per-row OCR
+            for row in changed_rows:
+                is_large = not self.is_small_font(row)
+                result = self._ocr_row_easyocr(row_images[row],
+                                               large_font=is_large)
+                ocr_results[row] = result
+                _prev_row_imgs[row] = row_images[row].copy()
+                _prev_row_ocr[row] = result
+
+        n_cached = len(cached_rows)
+        n_ocr = len(changed_rows)
+        if n_cached or n_ocr:
+            logger.debug(
+                f"EasyOCR: {n_ocr} rows OCR'd, {n_cached} cached"
+            )
 
         # ---- Assemble output ----
         for row in range(self.rows):
@@ -709,13 +600,8 @@ class MCDUParser:
                 message_data.extend([[]] * self.columns)
                 continue
 
-            # EasyOCR returns [(char, cx), …] → position-based mapping
-            # Tesseract returns str → text-based mapping
             raw = ocr_results[row]
-            if isinstance(raw, list):
-                cell_chars = self._map_positions_to_cells(raw)
-            else:
-                cell_chars = self._map_text_to_cells(raw, row)
+            cell_chars = self._map_positions_to_cells(raw)
 
             for col in range(self.columns):
                 if row_empty_flags[row][col]:

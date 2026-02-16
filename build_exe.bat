@@ -37,7 +37,6 @@ venv\Scripts\pyinstaller --name "MSFS-MCDU-Scraper-GUI" ^
     --hidden-import=win32ui ^
     --hidden-import=win32con ^
     --hidden-import=win32api ^
-    --collect-all pytesseract ^
     src/gui.py
 
 if errorlevel 1 (
@@ -59,7 +58,6 @@ venv\Scripts\pyinstaller --name "MSFS-MCDU-Scraper-CLI" ^
     --hidden-import=numpy ^
     --hidden-import=cv2 ^
     --hidden-import=yaml ^
-    --collect-all pytesseract ^
     src/main.py
     
 if errorlevel 1 (

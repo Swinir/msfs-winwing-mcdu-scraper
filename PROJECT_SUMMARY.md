@@ -102,7 +102,7 @@ msfs-winwing-mcdu-scraper/
 
 ### 3. MCDU Parser (`mcdu_parser.py`)
 - 24x14 grid extraction
-- OCR-based character detection (Tesseract)
+- OCR-based character detection (EasyOCR)
 - Color detection (8 colors)
 - Font size determination
 - Empty cell detection
@@ -128,7 +128,7 @@ msfs-winwing-mcdu-scraper/
 - **Capture Rate**: 10-60 FPS (default: 30)
 
 ### Processing
-- **OCR Engine**: Tesseract
+- **OCR Engine**: EasyOCR
 - **Image Processing**: OpenCV + NumPy
 - **Color Detection**: RGB threshold-based
 - **Font Detection**: Row-based pattern
@@ -173,7 +173,6 @@ opencv-python>=4.8.0    # Image processing
 Pillow>=10.0.0          # Image handling
 websockets>=12.0        # WebSocket client
 PyYAML>=6.0             # Configuration
-pytesseract>=0.3.10     # OCR
 ```
 
 ## Usage Workflow
@@ -246,7 +245,7 @@ graph TD
 ## Credits
 
 - **Screen Capture**: MSS library
-- **OCR**: Tesseract OCR
+- **OCR**: EasyOCR
 - **Protocol**: MobiFlight specification
 - **Hardware**: WinWing CDU
 

@@ -39,11 +39,7 @@ A production-ready Python application that captures the Microsoft Flight Simulat
    
 2. **Extract** the ZIP file to a folder
 
-3. **Install Tesseract OCR**
-   - Download from: https://github.com/UB-Mannheim/tesseract/wiki
-   - Run the installer (default settings are fine)
-   
-4. **Run the application**
+3. **Run the application**
    - Double-click `MSFS-MCDU-Scraper-GUI.exe` (for GUI)
    - Or `MSFS-MCDU-Scraper-CLI.exe` (for command-line)
 
@@ -73,14 +69,7 @@ venv\Scripts\activate  # On Windows
 pip install -r requirements.txt
 ```
 
-#### 4. Install Tesseract OCR
-
-Download and install Tesseract OCR from:
-https://github.com/UB-Mannheim/tesseract/wiki
-
-Add Tesseract to your PATH or update `pytesseract.pytesseract.tesseract_cmd` in `mcdu_parser.py`
-
-#### 5. Configure Application
+#### 4. Configure Application
 
 ```bash
 copy config.yaml.example config.yaml
@@ -396,7 +385,7 @@ The scraper acts as a "bridge" between MSFS and your WinWing CDU hardware:
        ▼
 ┌─────────────────┐
 │  MCDU Parser    │  ← Analyzes the captured image
-│  - OCR (Tesseract)  │     - Detects characters (A, B, 1, 2, etc.)
+│  - OCR (EasyOCR)     │     - Detects characters (A, B, 1, 2, etc.)
 │  - Color Detection  │     - Detects colors (white, cyan, green, etc.)
 │  - Font Size        │     - Detects size (large/small)
 └──────┬──────────┘
@@ -474,8 +463,7 @@ Row 13: Scratchpad (large font)
 **Solutions**:
 1. Verify screen region coordinates are correct
 2. Check that MCDU is visible in MSFS
-3. Ensure Tesseract OCR is installed and in PATH
-4. Try adjusting brightness/contrast in MSFS
+3. Try adjusting brightness/contrast in MSFS
 
 ### Low Frame Rate
 

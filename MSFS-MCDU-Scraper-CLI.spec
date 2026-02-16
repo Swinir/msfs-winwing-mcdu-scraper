@@ -1,11 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all
 
 datas = [('config.yaml.example', '.')]
 binaries = []
 hiddenimports = ['PIL', 'numpy', 'cv2', 'yaml']
-tmp_ret = collect_all('pytesseract')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(

@@ -64,7 +64,6 @@ You can capture the MCDU in two ways:
 Before starting, ensure you have:
 
 - [ ] Python 3.8+ installed
-- [ ] Tesseract OCR installed and in PATH
 - [ ] MSFS 2020/2024 with Airbus A330
 - [ ] WinWing CDU hardware
 - [ ] MobiFlight WinWing MCDU Connector installed
@@ -146,9 +145,6 @@ Your WinWing CDU should now display the MCDU content from MSFS!
 
 ### "WebSocket error: Connection refused"
 → Start MobiFlight WinWing MCDU Connector first
-
-### "TesseractNotFoundError"
-→ Install Tesseract OCR and add to PATH
 
 ### "Module not found" errors
 → Activate virtual environment and run `pip install -r requirements.txt`

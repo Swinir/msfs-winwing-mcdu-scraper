@@ -55,12 +55,11 @@ The repository includes a GitHub Actions workflow that automatically builds exec
 
 1. Sets up Windows build environment
 2. Installs Python and dependencies
-3. Installs Tesseract OCR
-4. Builds both GUI and CLI executables
-5. Packages with documentation
-6. Creates ZIP archive
-7. Uploads as artifact
-8. Creates GitHub release (for tags)
+3. Builds both GUI and CLI executables
+4. Packages with documentation
+5. Creates ZIP archive
+6. Uploads as artifact
+7. Creates GitHub release (for tags)
 
 ## Build Configuration
 
@@ -154,18 +153,8 @@ hiddenimports=[
 4. Test with `--onedir` mode first (easier debugging)
 
 **Common issues**:
-- Missing Tesseract installation
 - Config file not bundled
 - DLL dependencies missing
-
-### Tesseract Not Found
-
-**Error**: `TesseractNotFoundError` when running executable
-
-**Solution**: 
-- Users must install Tesseract OCR separately
-- Include instructions in README-EXECUTABLE.txt
-- Can't bundle Tesseract due to license/size
 
 ## Version Information
 
@@ -197,7 +186,6 @@ To add version info to executables:
 
 - Builds work natively
 - Include pywin32 for window capture
-- Tesseract must be installed separately
 
 ### Linux/Mac
 
@@ -250,7 +238,6 @@ Located at: `.github/workflows/build-executable.yml`
 
 - [ ] Run on clean Windows VM
 - [ ] Test without Python installed
-- [ ] Verify Tesseract requirement
 - [ ] Test both GUI and CLI versions
 - [ ] Check all features work
 - [ ] Verify config file handling
@@ -280,9 +267,8 @@ signtool sign /f certificate.pfx /p password /t http://timestamp.digicert.com MS
 Use tools like Inno Setup to create installer:
 1. Install Inno Setup
 2. Create `.iss` script
-3. Include Tesseract installer
-4. Bundle executables and docs
-5. Build setup.exe
+3. Bundle executables and docs
+4. Build setup.exe
 
 ### Multi-Platform Builds
 

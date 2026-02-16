@@ -4,7 +4,7 @@ This directory is reserved for character template images that can be used for te
 
 ## Future Enhancement
 
-Instead of using Tesseract OCR, you can:
+Instead of using OCR, you can:
 
 1. Capture reference images of each character from the MCDU
 2. Store them as templates in this directory

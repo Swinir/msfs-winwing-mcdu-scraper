@@ -13,24 +13,7 @@ This guide provides detailed instructions for setting up the MSFS A330 WinWing M
    python --version
    ```
 
-### 2. Tesseract OCR Installation
-
-1. Download Tesseract installer from:
-   https://github.com/UB-Mannheim/tesseract/wiki
-   
-2. Run the installer (recommended path: `C:\Program Files\Tesseract-OCR`)
-
-3. Add to PATH:
-   - Open System Properties → Environment Variables
-   - Add `C:\Program Files\Tesseract-OCR` to PATH
-   - Restart terminal
-
-4. Verify installation:
-   ```bash
-   tesseract --version
-   ```
-
-### 3. MobiFlight WinWing MCDU Connector
+### 2. MobiFlight WinWing MCDU Connector
 
 1. Download MobiFlight from [mobiflight.com](https://www.mobiflight.com/)
 2. Install and configure for WinWing CDU
@@ -75,7 +58,6 @@ This installs:
 - `Pillow` - Image handling
 - `websockets` - WebSocket client
 - `PyYAML` - Configuration parsing
-- `pytesseract` - OCR wrapper
 
 ### Step 4: Create Configuration
 
@@ -169,19 +151,6 @@ Press `Ctrl+C` to gracefully shut down:
 1. Reinstall Python with "Add to PATH" checked
 2. Or manually add Python to PATH
 3. Restart terminal
-
-### Tesseract Not Found
-
-**Error**: `TesseractNotFoundError`
-
-**Solution**:
-1. Verify Tesseract is installed
-2. Add to PATH or set in code:
-   ```python
-   # In mcdu_parser.py, add at top:
-   import pytesseract
-   pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-   ```
 
 ### MSS Installation Failed
 
