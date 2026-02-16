@@ -64,7 +64,7 @@ _prev_row_imgs: dict = {}    # row index → np.ndarray (last row image)
 _prev_row_ocr: dict = {}     # row index → OCR result
 _ROW_CHANGE_MSE = 5.0        # MSE below this ⇒ row is "unchanged"
 
-# Characters that the MCDU can actually display
+# Characters that the Airbus MCDU can actually display
 _MCDU_VALID_CHARS = set(
     'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
     '0123456789'
@@ -74,7 +74,7 @@ _MCDU_VALID_CHARS = set(
 # Common OCR misreads → correct MCDU character
 _OCR_FIXUPS = {
     'l': '1', '|': '1', '!': '1',
-    'o': 'O', '{': '(', '}': ')',
+    'o': 'O', '{': '[', '}': ']',
     ',': '.', ';': '.',
     '\\': '/',
     '_': '-', '~': '-',
@@ -82,6 +82,9 @@ _OCR_FIXUPS = {
     '@': 'A', '#': 'H',
     '$': 'S', '&': '8',
 }
+
+# EasyOCR character allowlist
+_EASYOCR_ALLOWLIST = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-/<>[]() '
 
 
 def _get_easyocr_reader():
@@ -215,17 +218,19 @@ class MCDUParser:
     # ------------------------------------------------------------------
     #  EasyOCR image preprocessing
     # ------------------------------------------------------------------
-    def _preprocess_for_easyocr(self, img: np.ndarray, scale: int = 3) -> np.ndarray:
+    def _preprocess_for_easyocr(self, img: np.ndarray, scale: int = 4) -> np.ndarray:
         """
         Prepare an image for EasyOCR.
 
         MCDU = bright coloured text on a near-black background.
         1. Max-channel grayscale (preserves coloured text brightness).
         2. Binary threshold (eliminates all background noise completely).
-        3. Upscale 3× with INTER_LINEAR (smooth edges, not blocky).
-        4. Light Gaussian blur to recreate the anti-aliased edges the
+        3. Invert → dark text on white background (matches CRAFT/CRNN
+           training-data distribution for better detection accuracy).
+        4. Upscale 4× with INTER_LINEAR (smooth edges, not blocky).
+        5. Light Gaussian blur to recreate the anti-aliased edges the
            CRNN model expects (binary alone is too jagged).
-        5. Pad so edge characters aren't clipped.
+        6. Pad with white border so edge characters aren't clipped.
         """
         gray = np.max(img, axis=2)
 
@@ -233,6 +238,10 @@ class MCDUParser:
         ink_threshold = self.INK_THRESHOLD + self._bg_floor
         _, binary = cv2.threshold(gray, ink_threshold, 255,
                                   cv2.THRESH_BINARY)
+
+        # Invert: CRAFT + CRNN were trained mostly on dark-on-light.
+        # Converting to black text on white background improves detection.
+        binary = cv2.bitwise_not(binary)
 
         # Upscale with bilinear interpolation (smoother than NEAREST)
         upscaled = cv2.resize(
@@ -242,13 +251,13 @@ class MCDUParser:
         )
 
         # Light blur to soften jagged binary edges → anti-aliased look
-        upscaled = cv2.GaussianBlur(upscaled, (3, 3), 0)
+        upscaled = cv2.GaussianBlur(upscaled, (3, 3), 0.8)
 
         # Pad so characters at the very edges aren't cut off
-        pad = 8
+        pad = 16
         padded = cv2.copyMakeBorder(
             upscaled, pad, pad, pad, pad,
-            cv2.BORDER_CONSTANT, value=0,
+            cv2.BORDER_CONSTANT, value=255,  # white border
         )
         return padded
 
@@ -260,7 +269,8 @@ class MCDUParser:
         upper = ch.upper()
         if upper in _MCDU_VALID_CHARS:
             return upper
-        return ch.upper()  # last resort
+        # Last resort – clamp to closest printable ASCII
+        return upper if upper.isprintable() else ' '
 
     # ------------------------------------------------------------------
     #  Full-image EasyOCR  (one inference call for the entire MCDU)
@@ -273,15 +283,20 @@ class MCDUParser:
         format as ``_ocr_row_easyocr`` so downstream mapping is identical.
         """
         try:
+            # Full-image mode uses 3× — a compromise; large-font rows
+            # (the usual trouble spot) benefit from the lower scale while
+            # small-font rows still have enough resolution.
             scale = 3
             processed = self._preprocess_for_easyocr(self.image, scale)
-            pad = 8  # must match _preprocess_for_easyocr
+            pad = 16  # must match _preprocess_for_easyocr
 
             reader = _get_easyocr_reader()
             results = reader.readtext(
                 processed, detail=1, paragraph=False,
-                allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-/<>[]() ',
-                width_ths=0.5,
+                allowlist=_EASYOCR_ALLOWLIST,
+                width_ths=0.3,
+                text_threshold=0.5,
+                low_text=0.3,
             )
 
             row_results: dict = {}
@@ -315,21 +330,27 @@ class MCDUParser:
     # ------------------------------------------------------------------
     #  Per-row EasyOCR — returns [(char, centre_x), …]
     # ------------------------------------------------------------------
-    def _ocr_row_easyocr(self, row_img: np.ndarray) -> list:
+    def _ocr_row_easyocr(self, row_img: np.ndarray,
+                          large_font: bool = False) -> list:
         """
         Run EasyOCR on a single row image.  Returns a list of
         ``(char, centre_x)`` in original pixel coordinates.
+
+        *large_font*: when True (even-numbered rows), use a lower upscale
+        factor so thick glyphs don't become blobs that confuse the CRNN.
         """
         try:
-            scale = 3
+            scale = 3 if large_font else 4
             processed = self._preprocess_for_easyocr(row_img, scale)
-            pad = 8  # must match _preprocess_for_easyocr
+            pad = 16  # must match _preprocess_for_easyocr
 
             reader = _get_easyocr_reader()
             results = reader.readtext(
                 processed, detail=1, paragraph=False,
-                allowlist='ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-/<>[]() ',
-                width_ths=0.5,
+                allowlist=_EASYOCR_ALLOWLIST,
+                width_ths=0.3,
+                text_threshold=0.5,
+                low_text=0.3,
             )
 
             char_positions: list = []
@@ -460,7 +481,7 @@ class MCDUParser:
         return " "
 
     def _detect_via_contours(self, cell: np.ndarray) -> Optional[str]:
-        """Contour fallback for symbols Tesseract often misses at small sizes:
+        """Contour fallback for symbols OCR often misses at small sizes:
            < > [ ] / . - ↔ ↑↓
         """
         try:
@@ -497,29 +518,60 @@ class MCDUParser:
             top_half = np.count_nonzero(roi[:h // 2, :])
             bot_half = np.count_nonzero(roi[h // 2:, :])
 
-            # --- dot / period ---
-            # Very small, roughly square, high fill, near the bottom
             cell_h, cell_w = cell.shape[:2]
+
+            # --- dot / period ---
             if glyph_w < cell_w * 0.35 and glyph_h < cell_h * 0.35 and fill > 0.40:
-                if y_min > cell_h * 0.55:        # bottom part of cell
+                if y_min > cell_h * 0.55:
                     return "."
 
             # --- dash / minus ---
-            # Very wide relative to height, horizontally centred
-            if aspect > 2.0 and glyph_h < cell_h * 0.30 and fill > 0.40:
+            # Wide relative to height, horizontal stroke.
+            # Slightly relaxed vs. original to catch MCDU "-----" dashes.
+            if aspect > 1.8 and glyph_h < cell_h * 0.30 and fill > 0.35:
                 return "-"
 
+            # --- small filled square / box  ☐  ---
+            # The Airbus MCDU uses small solid box symbols for selectable
+            # fields.  They look like compact, roughly-square solid blobs
+            # that are shorter than full-height letters.
+            # Output "[" which the mobiflight client maps to ☐ (U+2610).
+            if (0.6 < aspect < 1.7
+                    and fill > 0.55
+                    and glyph_h < cell_h * 0.65
+                    and glyph_w < cell_w * 0.65
+                    and glyph_h > cell_h * 0.15
+                    and glyph_w > cell_w * 0.15):
+                return "["
+
             # --- forward slash  /  ---
-            # Tall, thin diagonal stroke
             if 0.20 < aspect < 0.65 and 0.08 < fill < 0.35 and glyph_h > cell_h * 0.50:
-                # Diagonal: top-right should have more ink than top-left
-                # and bottom-left more than bottom-right
                 tl = np.count_nonzero(roi[:h // 2, :w // 2])
                 tr = np.count_nonzero(roi[:h // 2, w // 2:])
                 bl = np.count_nonzero(roi[h // 2:, :w // 2])
                 br = np.count_nonzero(roi[h // 2:, w // 2:])
                 if tr > tl and bl > br:
                     return "/"
+
+            # --- square brackets  [ ] ---
+            # Tall, with top+bottom horizontal bars and one dominant
+            # vertical edge.  Slightly wider aspect tolerance for MCDU.
+            if aspect < 0.70 and glyph_h > cell_h * 0.40 and 0.12 < fill < 0.60:
+                top_row = roi[:max(1, h // 4), :]
+                bot_row = roi[-max(1, h // 4):, :]
+                has_top = np.count_nonzero(top_row) > top_row.size * 0.20
+                has_bot = np.count_nonzero(bot_row) > bot_row.size * 0.20
+                if has_top and has_bot:
+                    if left_half > right_half * 1.3:
+                        return "["
+                    if right_half > left_half * 1.3:
+                        return "]"
+                    # When ink is symmetric, use glyph position within cell
+                    glyph_cx = (x_min + x_max) / 2
+                    if glyph_cx < cell_w * 0.40:
+                        return "["
+                    if glyph_cx > cell_w * 0.60:
+                        return "]"
 
             # --- angle-brackets  < > ---
             if 0.3 < aspect < 0.85 and fill < 0.40:
@@ -528,26 +580,15 @@ class MCDUParser:
                 if right_half > left_half * 1.4:
                     return ">"
 
-            # --- square brackets  [ ] ---
-            if aspect < 0.70 and 0.12 < fill < 0.60:
-                top_row = roi[:max(1, h // 4), :]
-                bot_row = roi[-max(1, h // 4):, :]
-                if np.any(top_row) and np.any(bot_row):
-                    if left_half > right_half * 1.3:
-                        return "["
-                    if right_half > left_half * 1.3:
-                        return "]"
-
-            # --- bidirectional arrow  ↔  (rendered as two arrowheads) ---
+            # --- bidirectional arrow  ↔ ---
             if n_contours >= 2 and 0.8 < aspect < 3.0 and fill < 0.40:
-                # Left-half and right-half have roughly equal ink
                 if 0.5 < (left_half / max(right_half, 1)) < 2.0:
-                    return "<>"   # closest ASCII representation
+                    return "<>"
 
-            # --- up/down arrow  ↑↓  (two vertically-stacked triangles) ---
+            # --- up/down arrow  ↑↓ ---
             if n_contours >= 2 and aspect < 0.80 and fill < 0.50:
                 if 0.5 < (top_half / max(bot_half, 1)) < 2.0:
-                    return "^v"   # closest ASCII representation
+                    return "^v"
 
             return None
         except Exception as e:
@@ -626,7 +667,7 @@ class MCDUParser:
 
             if not changed_rows:
                 pass  # everything cached
-            elif len(changed_rows) >= 4:
+            elif len(changed_rows) >= 8:
                 # Many rows changed — single full-image OCR (1 inference
                 # call instead of N separate ones).
                 full = self._ocr_full_image_easyocr()
@@ -638,7 +679,9 @@ class MCDUParser:
             else:
                 # Few rows changed — per-row OCR
                 for row in changed_rows:
-                    result = self._ocr_row_easyocr(row_images[row])
+                    is_large = not self.is_small_font(row)
+                    result = self._ocr_row_easyocr(row_images[row],
+                                                   large_font=is_large)
                     ocr_results[row] = result
                     _prev_row_imgs[row] = row_images[row].copy()
                     _prev_row_ocr[row] = result

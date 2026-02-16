@@ -10,6 +10,41 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# -----------------------------------------------------------------------
+# Characters that the WinWing CDU AirbusThales font can render.
+# Derived from the official MobiFlight Fenix / FBW / Headwind scripts.
+# Sending a character outside this set can freeze the CDU display.
+# -----------------------------------------------------------------------
+_CDU_SAFE_CHARS = set(
+    'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    '0123456789'
+    ' .-/°'
+    '\u2610'   # ☐  ballot box  (small square = selectable field)
+    '\u2190'   # ←  left arrow
+    '\u2192'   # →  right arrow
+    '\u2191'   # ↑  up arrow
+    '\u2193'   # ↓  down arrow
+    '\u0394'   # Δ  delta (overfly)
+)
+
+# Map characters that may come out of OCR to CDU-safe equivalents.
+# Anything not in this table *and* not in _CDU_SAFE_CHARS is replaced
+# with a space so the display never receives an unsupported glyph.
+_CDU_CHAR_MAP = {
+    '[': '\u2610',   # bracket → small square (Airbus box symbol)
+    ']': '\u2610',
+    '(': '\u2610',
+    ')': '\u2610',
+    '<': '\u2190',   # angle bracket → arrow
+    '>': '\u2192',
+    '*': '.',
+    '+': '-',
+    ':': '.',
+    '_': '-',
+    '~': '-',
+    '=': '-',
+}
+
 
 class MobiFlightClient:
     """WebSocket client for MobiFlight/WinWing CDU communication"""
@@ -129,16 +164,37 @@ class MobiFlightClient:
     
     async def send_display_data(self, display_data: list):
         """
-        Send display data to WinWing CDU
-        
+        Send display data to WinWing CDU.
+
+        Sanitises every character before sending so the CDU never receives
+        a glyph that the AirbusThales font cannot render (which would
+        freeze or blank the display).
+
         Args:
             display_data: List of 336 elements, each either [] or [char, color, size]
         """
-        non_empty = sum(1 for cell in display_data if cell)
-        logger.debug(f"Sending display data: {non_empty}/{len(display_data)} non-empty cells")
+        sanitised = []
+        for cell in display_data:
+            if not cell:
+                sanitised.append([])
+                continue
+            char = cell[0]
+            # Multi-char strings from contour fallback (e.g. "<>", "^v")
+            # — take first character only.
+            if len(char) > 1:
+                char = char[0]
+            # Map to CDU-safe equivalent
+            if char in _CDU_CHAR_MAP:
+                char = _CDU_CHAR_MAP[char]
+            elif char not in _CDU_SAFE_CHARS:
+                char = ' '
+            sanitised.append([char, cell[1], cell[2]])
+
+        non_empty = sum(1 for cell in sanitised if cell)
+        logger.debug(f"Sending display data: {non_empty}/{len(sanitised)} non-empty cells")
         message = {
             "Target": "Display",
-            "Data": display_data
+            "Data": sanitised
         }
         await self.send(json.dumps(message))
     

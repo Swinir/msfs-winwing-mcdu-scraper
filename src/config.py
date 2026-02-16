@@ -36,15 +36,18 @@ class Config:
         "o": "brown/blue"  # alternate
     }
     
-    # Special characters mapping (from MobiFlight)
+    # Special characters mapping (from MobiFlight AirbusThales font)
     SPECIAL_CHARS = {
         "\xa0": " ",      # Non-breaking space
-        "□": "\u2610",    # Ballot box
+        "□": "\u2610",    # Ballot box (small square – selectable field)
+        "[": "\u2610",    # Bracket → ballot box
+        "]": "\u2610",    # Bracket → ballot box
         "⬦": "°",         # Degree symbol
         "←": "\u2190",    # Left arrow
         "→": "\u2192",    # Right arrow
         "↑": "\u2191",    # Up arrow
         "↓": "\u2193",    # Down arrow
+        "&": "\u0394",    # Delta symbol (overfly)
     }
     
     def __init__(self, config_path: Optional[str] = None):
