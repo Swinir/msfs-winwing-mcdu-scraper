@@ -20,6 +20,11 @@ REM Activate virtual environment
 echo Activating virtual environment...
 call venv\Scripts\activate.bat
 
+REM Add Tesseract OCR to PATH if installed
+if exist "C:\Program Files\Tesseract-OCR\tesseract.exe" (
+    set "PATH=%PATH%;C:\Program Files\Tesseract-OCR"
+)
+
 REM Check if config.yaml exists
 if not exist "config.yaml" (
     echo.

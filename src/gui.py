@@ -20,6 +20,7 @@ if getattr(sys, 'frozen', False):
 else:
     sys.path.insert(0, str(Path(__file__).parent))
 
+import numpy as np
 from config import Config
 from window_capture import WindowCapture, WINDOWS_AVAILABLE
 from screen_capture import ScreenCapture
@@ -323,6 +324,10 @@ class MCDUScraperGUI:
                 
                 # Create window capture with optional crop region
                 self.capture = WindowCapture(window_handle=hwnd, crop_region=self.crop_region)
+
+                # Pin the window on top so mss can always see it,
+                # even when the user interacts with other applications.
+                self.capture.pin_on_top(True)
                 
                 if self.crop_region:
                     x, y, w, h = self.crop_region
@@ -391,7 +396,7 @@ class MCDUScraperGUI:
             )
             
             # Start client connection
-            asyncio.create_task(client.run())
+            client_task = asyncio.create_task(client.run())
             
             # Wait for connection
             await client.connected.wait()
@@ -400,6 +405,20 @@ class MCDUScraperGUI:
             # Main capture loop
             fps = self.config.get_capture_fps()
             frame_delay = 1.0 / fps
+            frame_count = 0
+            debug_interval = 30  # Log debug info every N frames
+            _last_frame_img = None
+            _last_display_data = None
+
+            # --- Temporal stabilisation ---
+            # A cell only changes on the physical CDU when the *new* value
+            # has been seen for STABILITY_FRAMES consecutive frames.
+            # This eliminates per-frame OCR jitter / flicker.
+            STABILITY_FRAMES = 3
+            _stable_display: Optional[list] = None
+            _pending_display: Optional[list] = None
+            _pending_counts: Optional[list] = None
+            _last_sent_display: Optional[list] = None
             
             while self.running:
                 frame_start = asyncio.get_event_loop().time()
@@ -407,20 +426,109 @@ class MCDUScraperGUI:
                 try:
                     # Capture screen/window
                     img = self.capture.capture()
+                    frame_count += 1
                     
-                    # Parse MCDU grid
-                    parser = MCDUParser(
-                        img,
-                        columns=Config.CDU_COLUMNS,
-                        rows=Config.CDU_ROWS
-                    )
-                    display_data = parser.parse_grid()
+                    # Debug: log frame info periodically
+                    if frame_count % debug_interval == 1:
+                        avg_brightness = float(np.mean(img))
+                        self.log(
+                            f"[DEBUG] Frame #{frame_count}: "
+                            f"shape={img.shape}, "
+                            f"avg_brightness={avg_brightness:.1f}, "
+                            f"min={int(img.min())}, max={int(img.max())}"
+                        )
+                        if avg_brightness < 5.0:
+                            self.log(
+                                "[DEBUG] WARNING: Captured image is nearly all black! "
+                                "The window content may not be captured correctly.",
+                                level="WARNING"
+                            )
                     
-                    # Send to WinWing
-                    await client.send_display_data(display_data)
+                    # --- Fuzzy frame comparison (MSE) ---
+                    # Screen captures may have sub-pixel noise between
+                    # identical frames; an exact hash would re-run OCR
+                    # needlessly.
+                    import time as _time
+                    _frame_changed = True
+                    if _last_frame_img is not None and _last_display_data is not None:
+                        if img.shape == _last_frame_img.shape:
+                            mse = float(np.mean(
+                                (img.astype(np.float32) - _last_frame_img.astype(np.float32)) ** 2
+                            ))
+                            if mse < 3.0:
+                                _frame_changed = False
+
+                    if not _frame_changed:
+                        display_data = _last_display_data
+                        _parse_ms = 0.0
+                    else:
+                        # Parse MCDU grid
+                        _t0 = _time.perf_counter()
+                        parser = MCDUParser(
+                            img,
+                            columns=Config.CDU_COLUMNS,
+                            rows=Config.CDU_ROWS
+                        )
+                        display_data = parser.parse_grid()
+                        _parse_ms = (_time.perf_counter() - _t0) * 1000
+                        _last_frame_img = img.copy()
+                        _last_display_data = display_data
+
+                    # --- Temporal stabilisation ---
+                    # Only update a cell when the new value has been
+                    # consistent for STABILITY_FRAMES in a row.
+                    if _stable_display is None:
+                        _stable_display = list(display_data)
+                        _pending_display = list(display_data)
+                        _pending_counts = [0] * len(display_data)
+                    else:
+                        n = min(len(display_data), len(_stable_display))
+                        for i in range(n):
+                            if display_data[i] == _stable_display[i]:
+                                _pending_counts[i] = 0
+                                _pending_display[i] = display_data[i]
+                            elif display_data[i] == _pending_display[i]:
+                                _pending_counts[i] += 1
+                                if _pending_counts[i] >= STABILITY_FRAMES:
+                                    _stable_display[i] = display_data[i]
+                                    _pending_counts[i] = 0
+                            else:
+                                _pending_display[i] = display_data[i]
+                                _pending_counts[i] = 1
+
+                    # Use the stabilised output
+                    display_data = list(_stable_display)
+
+                    # Debug: log OCR results periodically
+                    if frame_count % debug_interval == 1:
+                        non_empty = [cell for cell in display_data if cell]
+                        self.log(
+                            f"[DEBUG] OCR: {len(non_empty)}/{len(display_data)} "
+                            f"cells detected ({_parse_ms:.0f} ms)"
+                        )
+                        if non_empty:
+                            sample = non_empty[:10]
+                            sample_str = ", ".join(
+                                f"'{c[0]}'({c[1]})" for c in sample
+                            )
+                            self.log(f"[DEBUG] Sample cells: {sample_str}")
+                        else:
+                            self.log(
+                                "[DEBUG] No characters detected by OCR. "
+                                "Check that the MCDU content is visible "
+                                "in the captured area.",
+                                level="WARNING"
+                            )
+                    
+                    # Only send when stable data actually changed
+                    if display_data != _last_sent_display:
+                        await client.send_display_data(display_data)
+                        _last_sent_display = list(display_data)
                     
                 except Exception as e:
                     self.log(f"Frame error: {e}", level="ERROR")
+                    import traceback
+                    self.log(f"[DEBUG] {traceback.format_exc()}", level="ERROR")
                 
                 # Maintain target FPS
                 frame_elapsed = asyncio.get_event_loop().time() - frame_start
@@ -428,6 +536,11 @@ class MCDUScraperGUI:
                 await asyncio.sleep(sleep_time)
             
             # Cleanup
+            client_task.cancel()
+            try:
+                await client_task
+            except asyncio.CancelledError:
+                pass
             await client.close()
             self.log("Scraper stopped")
             
