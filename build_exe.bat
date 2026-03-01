@@ -27,7 +27,6 @@ venv\Scripts\pyinstaller --name "MSFS-MCDU-Scraper-GUI" ^
     --icon=NONE ^
     --paths src ^
     --add-data "config.yaml.example;." ^
-    --add-data "docs;docs" ^
     --hidden-import=PIL ^
     --hidden-import=PIL._tkinter_finder ^
     --hidden-import=numpy ^
@@ -85,7 +84,6 @@ if /i "%create_release%"=="y" (
     xcopy /Y QUICKSTART.md release\
     xcopy /Y LICENSE release\
     xcopy /Y config.yaml.example release\
-    xcopy /E /Y docs release\docs\
     echo.
     echo Release package created in release\ folder
 )

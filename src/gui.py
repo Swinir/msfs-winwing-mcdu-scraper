@@ -172,6 +172,14 @@ class MCDUScraperGUI:
             width=15
         )
         self.stop_button.grid(row=0, column=2, padx=5)
+
+        self.delete_templates_button = ttk.Button(
+            control_frame,
+            text="Delete Templates",
+            command=self.delete_templates,
+            width=18
+        )
+        self.delete_templates_button.grid(row=0, column=3, padx=5)
         
         # Logs
         log_frame = ttk.LabelFrame(main_frame, text="Logs", padding="10")
@@ -462,6 +470,31 @@ class MCDUScraperGUI:
                                 f"'{c[0]}'({c[1]})" for c in sample
                             )
                             self.log(f"[DEBUG] Sample cells: {sample_str}")
+
+                            # Full grid dump (24 columns × 14 rows)
+                            cols = Config.CDU_COLUMNS
+                            rows_n = Config.CDU_ROWS
+                            self.log("[DEBUG] ── MCDU Grid ──")
+                            for r in range(rows_n):
+                                row_chars = []
+                                row_colors = []
+                                for c in range(cols):
+                                    idx = r * cols + c
+                                    if idx < len(display_data) and display_data[idx]:
+                                        ch = display_data[idx][0]
+                                        cl = display_data[idx][1]
+                                    else:
+                                        ch = " "
+                                        cl = " "
+                                    row_chars.append(ch if len(ch) == 1 else ch[0])
+                                    row_colors.append(cl)
+                                text_line = "".join(row_chars)
+                                color_line = "".join(row_colors)
+                                self.log(
+                                    f"[DEBUG] R{r:02d} |{text_line}| "
+                                    f"c:{color_line}"
+                                )
+                            self.log("[DEBUG] ── End Grid ──")
                         else:
                             self.log(
                                 "[DEBUG] No characters detected by OCR. "
@@ -522,6 +555,45 @@ class MCDUScraperGUI:
     def clear_logs(self):
         """Clear log display"""
         self.log_text.delete(1.0, tk.END)
+
+    def delete_templates(self):
+        """Delete learned OCR templates so they are rebuilt on next start."""
+        if self.running:
+            messagebox.showwarning(
+                "Scraper Running",
+                "Please stop the scraper before deleting templates.",
+            )
+            return
+
+        template_path = Path(__file__).resolve().parent.parent / "templates" / "mcdu_templates.npz"
+        if template_path.exists():
+            try:
+                template_path.unlink()
+                self.log("Templates deleted.")
+            except Exception as e:
+                self.log(f"Error deleting templates: {e}", level="ERROR")
+                messagebox.showerror("Error", f"Failed to delete templates: {e}")
+                return
+        else:
+            self.log("No template file on disk.")
+
+        # Reset the in-memory singleton + row caches so the NEXT start
+        # triggers a full warmup with fresh learning.
+        try:
+            from mcdu_parser import (
+                _get_template_matcher,
+                _prev_row_imgs, _prev_row_ocr,
+            )
+            matcher = _get_template_matcher()
+            matcher.reset()
+            _prev_row_imgs.clear()
+            _prev_row_ocr.clear()
+            self.log(
+                "In-memory templates and row caches cleared. "
+                "Start the scraper to trigger a fresh warmup."
+            )
+        except Exception as e:
+            self.log(f"Error resetting in-memory state: {e}", level="ERROR")
 
 
 def main():

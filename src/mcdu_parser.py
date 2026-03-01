@@ -65,7 +65,143 @@ _OCR_FIXUPS: Dict[str, str] = {
     "$": "S", "&": "8",
 }
 
-_EASYOCR_ALLOWLIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-/<>[]() "
+_EASYOCR_ALLOWLIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.+-/<>[]() "
+
+
+# ---------------------------------------------------------------------------
+#  Structural disambiguation for commonly confused character pairs
+# ---------------------------------------------------------------------------
+
+def _disambiguate_confusables(cell_binary: np.ndarray, char: str) -> str:
+    """Correct EasyOCR / template confusions using glyph geometry.
+
+    EasyOCR frequently confuses D↔O, A↔B, B↔8, O↔0, ]↔1, I↔/
+    because these glyphs share a similar outline at low resolution.
+    This function examines specific structural features to pick the
+    correct character.
+
+    Called during template *learning* (to prevent poisoning) and
+    during *recognition* output (to fix residual errors).
+    """
+    if char not in ('D', 'O', '0', 'A', 'B', '1', ']', '8', 'I', '/'):
+        return char
+
+    coords = cv2.findNonZero(cell_binary)
+    if coords is None:
+        return char
+    x, y, bw, bh = cv2.boundingRect(coords)
+    if bw < 3 or bh < 3:
+        return char
+    glyph = cell_binary[y : y + bh, x : x + bw]
+    h, w = glyph.shape
+
+    # ------------------------------------------------------------------
+    #  D vs O  (and 0)
+    # ------------------------------------------------------------------
+    if char in ('D', 'O', '0'):
+        # D has a straight vertical bar on the left that runs the full
+        # height.  O/0 curve away at top-left and bottom-left corners.
+        left_cols = max(2, w // 6)
+        left_strip = glyph[:, :left_cols]
+        rows_with_ink = np.any(left_strip > 0, axis=1)
+        left_continuity = float(np.count_nonzero(rows_with_ink)) / h
+        left_fill = float(np.count_nonzero(left_strip)) / max(left_strip.size, 1)
+
+        if left_continuity > 0.88 and left_fill > 0.55:
+            return 'D'
+        elif char == 'D':
+            return 'O'
+        # If char is '0' or 'O' and left is NOT straight, keep as-is
+
+    # ------------------------------------------------------------------
+    #  A vs B
+    # ------------------------------------------------------------------
+    if char in ('A', 'B'):
+        top_quarter = glyph[: h // 4, :]
+        bot_quarter = glyph[3 * h // 4 :, :]
+        top_ink_cols = np.any(top_quarter > 0, axis=0)
+        bot_ink_cols = np.any(bot_quarter > 0, axis=0)
+        top_span = float(np.count_nonzero(top_ink_cols)) / max(w, 1)
+        bot_span = float(np.count_nonzero(bot_ink_cols)) / max(w, 1)
+
+        if top_span < bot_span * 0.78:
+            return 'A'
+        elif char == 'A' and top_span > bot_span * 0.88:
+            return 'B'
+
+    # ------------------------------------------------------------------
+    #  B vs 8
+    # ------------------------------------------------------------------
+    if char in ('B', '8'):
+        # B has a solid vertical bar on the left (like D).
+        # 8 has curves on both sides — the left edge has gaps at the
+        # waist and near corners.
+        left_cols = max(2, w // 5)
+        left_strip = glyph[:, :left_cols]
+        rows_with_ink = np.any(left_strip > 0, axis=1)
+        left_continuity = float(np.count_nonzero(rows_with_ink)) / h
+        left_fill = float(np.count_nonzero(left_strip)) / max(left_strip.size, 1)
+
+        if left_continuity > 0.85 and left_fill > 0.45:
+            return 'B'
+        elif char == 'B':
+            return '8'
+
+    # ------------------------------------------------------------------
+    #  ] vs 1
+    # ------------------------------------------------------------------
+    if char in ('1', ']'):
+        aspect = w / max(h, 1)
+        if aspect < 0.25:
+            # Very narrow — definitely 1, not ]
+            return '1'
+        # ] has a solid right-edge vertical bar running the full height,
+        # with ink in the rightmost columns on nearly every row.
+        # 1 (even with serifs) has its vertical stroke more centred.
+        right_cols = max(2, w // 5)
+        right_strip = glyph[:, -right_cols:]
+        right_rows = np.any(right_strip > 0, axis=1)
+        right_continuity = float(np.count_nonzero(right_rows)) / h
+
+        # Also check horizontal centre of mass: ] has it shifted right,
+        # 1 has it near the centre.
+        col_ink = np.sum(glyph > 0, axis=0).astype(float)
+        total_ink = col_ink.sum()
+        if total_ink > 0:
+            com_x = float(np.dot(np.arange(w), col_ink)) / total_ink
+            com_ratio = com_x / max(w - 1, 1)  # 0=left, 1=right
+        else:
+            com_ratio = 0.5
+
+        # ] : right continuity ~1.0 and COM shifted right (> 0.55)
+        # 1 : COM near centre (0.35–0.55) even with serifs
+        if right_continuity > 0.85 and com_ratio > 0.55:
+            # Also verify the left side is mostly empty in the middle
+            mid_left = glyph[h // 3 : 2 * h // 3, : max(1, w // 3)]
+            mid_left_fill = float(np.count_nonzero(mid_left)) / max(mid_left.size, 1)
+            if mid_left_fill < 0.20:
+                return ']'
+        return '1'
+
+    # ------------------------------------------------------------------
+    #  I vs / (and 1)
+    # ------------------------------------------------------------------
+    if char in ('I', '/'):
+        # / has a strong diagonal: top-right ink, bottom-left ink.
+        # I is vertically symmetric: ink centred on every row.
+        if h > 3 and w > 3:
+            tr = np.count_nonzero(glyph[: h // 2, w // 2 :])
+            bl = np.count_nonzero(glyph[h // 2 :, : w // 2])
+            tl = np.count_nonzero(glyph[: h // 2, : w // 2])
+            br = np.count_nonzero(glyph[h // 2 :, w // 2 :])
+            diag_score = (tr + bl) / max(tl + br + 1, 1)
+            if diag_score > 2.0:
+                return '/'
+            else:
+                return 'I'
+
+    return char
+
 
 # ---------------------------------------------------------------------------
 #  Row-level OCR cache  (persists across MCDUParser instances)
@@ -89,13 +225,16 @@ class TemplateMatcher:
     """
 
     NORM_SIZE = (20, 28)       # (width, height) of normalised glyph
-    MATCH_THRESHOLD = 0.78     # min NCC score to accept
+    MATCH_THRESHOLD = 0.85     # min NCC score to accept
     MAX_TEMPLATES = 5          # max variants stored per character
+    CONSENSUS_MIN = 2          # min votes to promote a candidate template
 
     def __init__(self) -> None:
         self._hash_cache: Dict[bytes, str] = {}
         self._templates: Dict[str, List[np.ndarray]] = {}
+        self._candidates: Dict[bytes, Dict[str, int]] = {}
         self._dirty = False
+        self._warmup_complete = False
         self._template_path = (
             Path(__file__).resolve().parent.parent / "templates" / "mcdu_templates.npz"
         )
@@ -127,6 +266,8 @@ class TemplateMatcher:
                     best_char = char
 
         if best_score >= self.MATCH_THRESHOLD and best_char is not None:
+            # Correct confusable pairs (D/O, A/B, ]/1) before caching
+            best_char = _disambiguate_confusables(cell_binary, best_char)
             self._hash_cache[key] = best_char
             return (best_char, best_score)
 
@@ -136,22 +277,65 @@ class TemplateMatcher:
 
     def learn(self, char: str, cell_binary: np.ndarray,
               confidence: float = 1.0) -> None:
-        """Record a confirmed character template."""
-        if confidence < 0.45 or not char or not char.strip():
+        """Record a confirmed character template (consensus-based).
+
+        During warmup (before ``_warmup_complete``), each glyph shape
+        accumulates votes.  A template is only promoted once the same
+        character reaches ``CONSENSUS_MIN`` votes with a clear majority.
+        After warmup, new characters are accepted directly (the bulk of
+        the character set is already safely templated).
+        """
+        if confidence < 0.60 or not char or not char.strip():
             return
         char = char.upper()
+        if len(char) != 1:
+            return
+
+        # Correct confusable pairs BEFORE learning so templates are
+        # labelled correctly from the start.
+        char = _disambiguate_confusables(cell_binary, char)
 
         glyph = self._extract_glyph(cell_binary)
         if glyph is None:
             return
 
         norm = self._normalize(glyph)
-        self._hash_cache[norm.tobytes()] = char
+        key = norm.tobytes()
+
+        # Already known — skip
+        if key in self._hash_cache:
+            return
+
+        # ---- post-warmup: direct learning for truly new glyphs ----
+        if self._warmup_complete:
+            self._commit_template(char, norm)
+            return
+
+        # ---- warmup: candidate voting ----
+        if key not in self._candidates:
+            self._candidates[key] = {}
+        votes = self._candidates[key]
+        votes[char] = votes.get(char, 0) + 1
+
+        best_char = max(votes, key=votes.get)
+        total = sum(votes.values())
+        if (votes[best_char] >= self.CONSENSUS_MIN
+                and votes[best_char] > total * 0.6):
+            self._commit_template(best_char, norm)
+            del self._candidates[key]
+            logger.debug(
+                "Promoted '%s' (%d/%d votes, %d total templates)",
+                best_char, votes[best_char], total, self.template_count,
+            )
+
+    def _commit_template(self, char: str, norm: np.ndarray) -> None:
+        """Directly commit a normalised glyph as a template."""
+        key = norm.tobytes()
+        self._hash_cache[key] = char
 
         if char not in self._templates:
             self._templates[char] = []
 
-        # skip near-duplicates
         for existing in self._templates[char]:
             if self._ncc(norm, existing) > 0.95:
                 return
@@ -161,10 +345,6 @@ class TemplateMatcher:
 
         self._templates[char].append(norm)
         self._dirty = True
-        logger.debug(
-            "Learned '%s' (%d variants, %d total templates)",
-            char, len(self._templates[char]), self.template_count,
-        )
 
     # ----- persistence ---------------------------------------------------
 
@@ -175,8 +355,11 @@ class TemplateMatcher:
             self._template_path.parent.mkdir(parents=True, exist_ok=True)
             data = {}
             for char, templates in self._templates.items():
+                # Use hex-encoded UTF-8 to handle multi-character keys
+                # (e.g. "<>" from OCR) as well as single characters.
+                hex_key = char.encode("utf-8").hex()
                 for i, tmpl in enumerate(templates):
-                    data[f"c{ord(char):04x}_{i}"] = tmpl
+                    data[f"h{hex_key}_{i}"] = tmpl
             np.savez_compressed(str(self._template_path), **data)
             self._dirty = False
             logger.info(
@@ -192,10 +375,18 @@ class TemplateMatcher:
         try:
             data = np.load(str(self._template_path))
             for key in data.files:
-                char = chr(int(key.split("_")[0][1:], 16))
+                prefix = key.split("_")[0]
+                if prefix.startswith("h"):
+                    # New format: hex-encoded UTF-8
+                    char = bytes.fromhex(prefix[1:]).decode("utf-8")
+                else:
+                    # Legacy format: cXXXX (single Unicode codepoint)
+                    char = chr(int(prefix[1:], 16))
                 if char not in self._templates:
                     self._templates[char] = []
                 self._templates[char].append(data[key])
+            if self.template_count > 0:
+                self._warmup_complete = True
             logger.info(
                 "Loaded %d templates for %d characters",
                 self.template_count, len(self._templates),
@@ -236,6 +427,15 @@ class TemplateMatcher:
     @property
     def template_count(self) -> int:
         return sum(len(v) for v in self._templates.values())
+
+    def reset(self) -> None:
+        """Wipe all in-memory templates and candidates."""
+        self._hash_cache.clear()
+        self._templates.clear()
+        self._candidates.clear()
+        self._warmup_complete = False
+        self._dirty = False
+        logger.info("Template matcher reset — all templates cleared")
 
 
 # Singleton
@@ -420,7 +620,10 @@ class MCDUParser:
         Prepare an image strip for EasyOCR.
 
         Pipeline: max-channel → binary threshold → invert (dark-on-light) →
-        upscale → light blur → white padding.
+        upscale (cubic) → white padding.
+
+        No blur is applied — it was softening thin strokes (like the
+        middle bar of E) and causing misreads (E → P).
         """
         gray = np.max(img, axis=2)
         ink_threshold = self.INK_THRESHOLD + self._bg_floor
@@ -430,9 +633,8 @@ class MCDUParser:
         upscaled = cv2.resize(
             binary,
             (binary.shape[1] * scale, binary.shape[0] * scale),
-            interpolation=cv2.INTER_LINEAR,
+            interpolation=cv2.INTER_CUBIC,
         )
-        upscaled = cv2.GaussianBlur(upscaled, (3, 3), 0.8)
 
         pad = 16
         return cv2.copyMakeBorder(
@@ -455,9 +657,8 @@ class MCDUParser:
     # ------------------------------------------------------------------
     #  EasyOCR — full image
     # ------------------------------------------------------------------
-    def _ocr_full_image_easyocr(self) -> Dict[int, list]:
+    def _ocr_full_image_easyocr(self, scale: int = 3) -> Dict[int, list]:
         try:
-            scale = 3
             processed = self._preprocess_for_easyocr(self.image, scale)
             pad = 16
             reader = _get_easyocr_reader()
@@ -543,7 +744,13 @@ class MCDUParser:
     #  Contour-based symbol detection  (improved)
     # ------------------------------------------------------------------
     def _detect_via_contours(self, cell: np.ndarray) -> Optional[str]:
-        """Detect symbols that OCR often misreads: . - / < > [ ] ° arrows."""
+        """Detect symbols that OCR often misreads: . - / < > [ ] ° arrows.
+
+        IMPORTANT: This detector must be very conservative — a false
+        positive here gets learned by the template matcher and will
+        permanently corrupt recognition for that glyph shape.  Only
+        return a character when the geometric evidence is unambiguous.
+        """
         try:
             gray = np.max(cell, axis=2)
             ink_threshold = self.INK_THRESHOLD + self._bg_floor
@@ -574,11 +781,6 @@ class MCDUParser:
             n_contours = len(contours)
             cell_h, cell_w = cell.shape[:2]
 
-            left_half = np.count_nonzero(roi[:, : w // 2])
-            right_half = np.count_nonzero(roi[:, w // 2 :])
-            top_half = np.count_nonzero(roi[: h // 2, :])
-            bot_half = np.count_nonzero(roi[h // 2 :, :])
-
             # --- dot / period ---
             if (glyph_w < cell_w * 0.35 and glyph_h < cell_h * 0.35
                     and fill > 0.40 and y_min > cell_h * 0.55):
@@ -588,66 +790,67 @@ class MCDUParser:
             if (glyph_w < cell_w * 0.40 and glyph_h < cell_h * 0.40
                     and fill > 0.20 and y_min < cell_h * 0.30
                     and n_contours <= 2):
-                # Ring shape: low fill, near top of cell
                 if 0.20 < fill < 0.65:
-                    return "."  # CDU maps ° via special char
+                    return "."
 
             # --- dash / minus ---
-            if aspect > 1.8 and glyph_h < cell_h * 0.30 and fill > 0.35:
+            if aspect > 2.0 and glyph_h < cell_h * 0.25 and fill > 0.40:
                 return "-"
 
-            # --- small filled square / box ---
-            if (0.6 < aspect < 1.7 and fill > 0.55
-                    and cell_h * 0.15 < glyph_h < cell_h * 0.65
-                    and cell_w * 0.15 < glyph_w < cell_w * 0.65):
-                return "["
-
             # --- forward slash / ---
-            if (0.20 < aspect < 0.65 and 0.08 < fill < 0.35
-                    and glyph_h > cell_h * 0.50):
+            if (0.20 < aspect < 0.50 and 0.08 < fill < 0.25
+                    and glyph_h > cell_h * 0.55):
                 tl = np.count_nonzero(roi[: h // 2, : w // 2])
                 br = np.count_nonzero(roi[h // 2 :, w // 2 :])
                 tr = np.count_nonzero(roi[: h // 2, w // 2 :])
                 bl = np.count_nonzero(roi[h // 2 :, : w // 2])
-                if tr > tl and bl > br:
+                diag = tr + bl
+                anti = tl + br + 1
+                if diag > anti * 2.5 and tr > tl * 1.5 and bl > br * 1.5:
                     return "/"
 
             # --- square brackets [ ] ---
-            if aspect < 0.70 and glyph_h > cell_h * 0.40 and 0.12 < fill < 0.60:
-                top_row = roi[: max(1, h // 4), :]
-                bot_row = roi[-max(1, h // 4) :, :]
+            # A bracket is OPEN on one side: the middle rows of the open
+            # side must have very little ink.  Letters like T, A, B, D
+            # have ink across the full width or in the centre, so they
+            # fail this check.
+            if (aspect < 0.65 and glyph_h > cell_h * 0.40
+                    and 0.10 < fill < 0.50 and glyph_w < cell_w * 0.70):
+                # Check top and bottom bars
+                top_row = roi[: max(1, h // 5), :]
+                bot_row = roi[-max(1, h // 5) :, :]
                 has_top = np.count_nonzero(top_row) > top_row.size * 0.20
                 has_bot = np.count_nonzero(bot_row) > bot_row.size * 0.20
                 if has_top and has_bot:
-                    if left_half > right_half * 1.3:
-                        return "["
-                    if right_half > left_half * 1.3:
-                        return "]"
-                    glyph_cx = (x_min + x_max) / 2
-                    return "[" if glyph_cx < cell_w * 0.40 else "]"
+                    # Key distinction: bracket must be OPEN on one side.
+                    # Check the middle third of the glyph height.
+                    mid_start = h // 3
+                    mid_end = 2 * h // 3
+                    mid_band = roi[mid_start:mid_end, :]
+                    # Left and right edges of the middle band
+                    mid_left = mid_band[:, : max(1, w // 3)]
+                    mid_right = mid_band[:, -max(1, w // 3) :]
+                    mid_center = mid_band[:, w // 4 : 3 * w // 4]
+                    left_fill = np.count_nonzero(mid_left) / max(mid_left.size, 1)
+                    right_fill = np.count_nonzero(mid_right) / max(mid_right.size, 1)
+                    center_fill = np.count_nonzero(mid_center) / max(mid_center.size, 1)
 
-            # --- angle brackets < > ---
-            if 0.3 < aspect < 0.85 and fill < 0.40:
-                if left_half > right_half * 1.4:
-                    return "<"
-                if right_half > left_half * 1.4:
-                    return ">"
+                    # A '[' has ink on the left, empty on the right middle.
+                    # A ']' has ink on the right, empty on the left middle.
+                    # Letters like T, A, D have significant ink in the centre
+                    # of the middle band — reject those.
+                    if center_fill > 0.25:
+                        pass  # Not a bracket — has ink in the middle (letter)
+                    elif left_fill > 0.40 and right_fill < 0.15:
+                        return "["
+                    elif right_fill > 0.40 and left_fill < 0.15:
+                        return "]"
 
             # --- colon : (two vertically stacked dots) ---
             if (n_contours == 2 and glyph_w < cell_w * 0.35
                     and glyph_h > cell_h * 0.35
                     and 0.15 < fill < 0.50):
                 return "."
-
-            # --- bidirectional arrow ↔ ---
-            if n_contours >= 2 and 0.8 < aspect < 3.0 and fill < 0.40:
-                if 0.5 < (left_half / max(right_half, 1)) < 2.0:
-                    return "<>"
-
-            # --- up / down arrow ↑↓ ---
-            if n_contours >= 2 and aspect < 0.80 and fill < 0.50:
-                if 0.5 < (top_half / max(bot_half, 1)) < 2.0:
-                    return "^v"
 
             return None
         except Exception as exc:
@@ -740,7 +943,95 @@ class MCDUParser:
         ocr_results: Dict[int, list] = dict(cached_ocr)
 
         if unmatched_rows and _EASYOCR_AVAILABLE:
-            if len(unmatched_rows) >= 8:
+            _is_warmup = not matcher._warmup_complete
+
+            if _is_warmup and len(unmatched_rows) >= 4:
+                # ── Extended multi-scale warmup OCR ─────────────────
+                # Run multiple rounds of full-image + row-level OCR at
+                # different scales.  Each result feeds the consensus-based
+                # template learner.  The first run takes ~30 s but produces
+                # reliable templates for instant (<1 ms) matching afterwards.
+                WARMUP_ROUNDS = 10
+                warmup_scales = [2, 3, 4, 5, 6]
+                logger.info(
+                    "Template warmup — %d rounds × %d scales on %d rows "
+                    "(this may take ~30 s) …",
+                    WARMUP_ROUNDS, len(warmup_scales), len(unmatched_rows),
+                )
+
+                # Accumulate per-cell votes across ALL rounds
+                cell_all_votes: Dict[Tuple[int, int], Dict[str, int]] = {}
+
+                for rnd in range(WARMUP_ROUNDS):
+                    for ws in warmup_scales:
+                        # Full-image OCR at this scale
+                        full = self._ocr_full_image_easyocr(scale=ws)
+                        for row in unmatched_rows:
+                            result = full.get(row, [])
+                            cells = self._map_positions_to_cells(result)
+                            for col in range(self.columns):
+                                ch = cells[col]
+                                if ch and ch.strip():
+                                    k = (row, col)
+                                    if k not in cell_all_votes:
+                                        cell_all_votes[k] = {}
+                                    cell_all_votes[k][ch] = (
+                                        cell_all_votes[k].get(ch, 0) + 1
+                                    )
+                                    cell_bin = self._preprocess_cell(
+                                        self.extract_cell(row, col),
+                                    )
+                                    matcher.learn(ch, cell_bin, confidence=0.8)
+
+                    # Also do row-level OCR (different pre-processing path)
+                    for row in unmatched_rows:
+                        for ws2 in (3, 4, 5):
+                            is_large = not self.is_small_font(row)
+                            result = self._ocr_row_easyocr(
+                                row_images[row], large_font=is_large,
+                            )
+                            cells = self._map_positions_to_cells(result)
+                            for col in range(self.columns):
+                                ch = cells[col]
+                                if ch and ch.strip():
+                                    k = (row, col)
+                                    if k not in cell_all_votes:
+                                        cell_all_votes[k] = {}
+                                    cell_all_votes[k][ch] = (
+                                        cell_all_votes[k].get(ch, 0) + 1
+                                    )
+                                    cell_bin = self._preprocess_cell(
+                                        self.extract_cell(row, col),
+                                    )
+                                    matcher.learn(ch, cell_bin, confidence=0.8)
+
+                    logger.info(
+                        "  Warmup round %d/%d done — %d templates so far",
+                        rnd + 1, WARMUP_ROUNDS, matcher.template_count,
+                    )
+
+                # Build display results via majority vote across ALL rounds
+                for row in unmatched_rows:
+                    row_chars: list = []
+                    for col in range(self.columns):
+                        if row_empty[row][col]:
+                            continue
+                        votes = cell_all_votes.get((row, col), {})
+                        if votes:
+                            best = max(votes, key=votes.get)
+                            cx = col * self.cell_width + self.cell_width / 2
+                            row_chars.append((best, cx))
+                    ocr_results[row] = row_chars
+                    _prev_row_imgs[row] = row_images[row].copy()
+                    _prev_row_ocr[row] = row_chars
+
+                matcher._warmup_complete = True
+                logger.info(
+                    "Warmup done — %d templates for %d characters",
+                    matcher.template_count, len(matcher._templates),
+                )
+
+            elif len(unmatched_rows) >= 8:
                 # Full-image OCR (one inference)
                 full = self._ocr_full_image_easyocr()
                 for row in unmatched_rows:
@@ -804,20 +1095,35 @@ class MCDUParser:
 
                 # Priority: template > OCR > contour
                 char = template_results.get((row, col))
+                _from_ocr = False  # track source for learning
 
                 if not char:
                     char = cell_chars[col]
+                    if char and char.strip():
+                        _from_ocr = True
 
                 if not char or char == " ":
                     contour_char = self._detect_via_contours(cell_img)
                     if contour_char:
                         char = contour_char
+                        _from_ocr = False  # contour — don't learn
 
                 if not char:
                     char = " "
 
-                # Learn from OCR / contour results for future frames
-                if char.strip() and (row, col) not in template_results:
+                # Final structural correction for confusable pairs.
+                # Even if the template matcher returned a char, verify
+                # it against glyph geometry (D/O, A/B, ]/1).
+                if char.strip():
+                    cell_bin_check = self._preprocess_cell(cell_img)
+                    char = _disambiguate_confusables(cell_bin_check, char)
+
+                # Learn ONLY from EasyOCR results (not contour fallbacks).
+                # Contour detection is intentionally conservative for
+                # symbols only; learning from it causes letters like T, A, B
+                # to be mislearned as brackets.
+                if (char.strip() and _from_ocr
+                        and (row, col) not in template_results):
                     cell_bin = self._preprocess_cell(cell_img)
                     matcher.learn(char, cell_bin, confidence=0.7)
                     _learned_this_frame += 1

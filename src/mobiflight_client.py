@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 _CDU_SAFE_CHARS = set(
     'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
     '0123456789'
-    ' .-/°'
+    ' .-/°<>[]()'
     '\u2610'   # ☐  ballot box  (small square = selectable field)
     '\u2190'   # ←  left arrow
     '\u2192'   # →  right arrow
@@ -31,18 +31,16 @@ _CDU_SAFE_CHARS = set(
 # Anything not in this table *and* not in _CDU_SAFE_CHARS is replaced
 # with a space so the display never receives an unsupported glyph.
 _CDU_CHAR_MAP = {
-    '[': '\u2610',   # bracket → small square (Airbus box symbol)
-    ']': '\u2610',
-    '(': '\u2610',
-    ')': '\u2610',
-    '<': '\u2190',   # angle bracket → arrow
-    '>': '\u2192',
+    '(': '[',
+    ')': ']',
     '*': '.',
     '+': '-',
     ':': '.',
     '_': '-',
     '~': '-',
     '=': '-',
+    '<': '\u2190',   # ← left arrow (MCDU arrow indicator)
+    '>': '\u2192',   # → right arrow (MCDU arrow indicator)
 }
 
 

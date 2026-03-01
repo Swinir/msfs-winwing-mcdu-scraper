@@ -1,14 +1,18 @@
 """
 Window-specific capture module.
 
-Prefers GDI (PrintWindow / BitBlt) so the target window does NOT need to
-be on top or visible.  Falls back to mss (Desktop Duplication API) for
-hardware-accelerated (DirectX/OpenGL) windows where GDI returns an empty
-frame — in that case the window must be visible on screen.
+Capture priority:
+1. GDI (PrintWindow / BitBlt) — works in the background for most
+   non-hardware-accelerated windows.
+2. Windows Graphics Capture (WGC) — works in the background for
+   DirectX / hardware-accelerated windows (Windows 10 1903+).
+3. mss (Desktop Duplication API) — last resort; requires the
+   target window to be visible on screen.
 """
 
 import logging
 import numpy as np
+import threading
 from PIL import Image
 from typing import List, Tuple, Optional
 import sys
@@ -33,6 +37,12 @@ try:
     MSS_AVAILABLE = True
 except ImportError:
     MSS_AVAILABLE = False
+
+try:
+    from windows_capture import WindowsCapture, CaptureControl
+    WGC_AVAILABLE = True
+except ImportError:
+    WGC_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -77,11 +87,22 @@ class WindowCapture:
         self.hwnd = window_handle
         self.crop_region = crop_region
 
+        # Backend selection: None = not yet probed, 'gdi' / 'wgc' / 'mss'
+        self._backend: Optional[str] = None
+
         # MSS fallback state (initialised lazily on first capture)
-        self._use_mss: Optional[bool] = None          # None = not yet probed
         self._mss_instance: Optional["mss.mss"] = None  # persistent instance
         self._frame_count: int = 0
         self._prev_hash: Optional[int] = None          # for change-detection debug
+        self._consecutive_black: int = 0               # re-probe counter
+
+        # WGC state (initialised lazily when needed)
+        self._wgc_capture = None
+        self._wgc_control: Optional["CaptureControl"] = None
+        self._wgc_frame: Optional[np.ndarray] = None   # latest RGB frame
+        self._wgc_lock = threading.Lock()
+        self._wgc_ready = threading.Event()
+        self._wgc_closed = False
         
         if not self.hwnd and window_title:
             self.hwnd = self._find_window_by_title(window_title)
@@ -148,23 +169,35 @@ class WindowCapture:
         return sorted(windows, key=lambda x: x[1])
     
     @staticmethod
-    def _is_mostly_black(img: np.ndarray, max_threshold: int = 15) -> bool:
+    def _is_mostly_black(img: np.ndarray, max_threshold: int = 100,
+                         avg_threshold: float = 3.0) -> bool:
         """
         Check if an image is essentially empty (all pixels very dark).
 
         A truly blank capture (e.g. GDI failing on a DirectX window) will
         have every pixel near zero.  An MCDU screen is dark overall but
-        contains bright text, so ``np.max`` will be well above the threshold.
+        contains bright text, so ``np.max`` will be well above the threshold
+        and the average brightness will be noticeably above zero.
+
+        We check **both** conditions:
+        * If the *brightest* pixel is below ``max_threshold`` the image
+          is almost certainly a failed capture (window chrome / borders
+          can produce stray pixels up to ~80 even when the content is
+          completely black).
+        * If the *average* brightness is below ``avg_threshold`` the
+          image is too dark to contain any useful MCDU text.
 
         Args:
             img: RGB image as numpy array
             max_threshold: If the brightest pixel is below this value the
                 frame is considered empty.
+            avg_threshold: If the mean pixel value is below this the frame
+                is considered empty.
 
         Returns:
             True if the image appears to be an empty / failed capture.
         """
-        return int(np.max(img)) < max_threshold
+        return int(np.max(img)) < max_threshold or float(np.mean(img)) < avg_threshold
 
     def _get_mss(self):
         """Return a persistent mss instance, creating one if needed."""
@@ -220,60 +253,197 @@ class WindowCapture:
         img = img[:, :, [2, 1, 0]]  # convert BGR to RGB
         return img
 
+    # ------------------------------------------------------------------
+    # WGC (Windows Graphics Capture) backend
+    # ------------------------------------------------------------------
+
+    def _start_wgc(self) -> bool:
+        """Start a WGC background capture session for ``self.actual_title``.
+
+        Returns True if the session started successfully, False otherwise.
+        """
+        if not WGC_AVAILABLE:
+            return False
+
+        try:
+            cap = WindowsCapture(
+                cursor_capture=False,
+                draw_border=False,
+                window_name=self.actual_title,
+            )
+
+            owner = self  # prevent closure over 'self' name collision
+
+            @cap.event
+            def on_frame_arrived(frame, capture_control):
+                # frame.frame_buffer is BGRA (H, W, 4).
+                # Convert BGRA → RGB and copy so the native buffer can be reused.
+                rgb = frame.frame_buffer[:, :, [2, 1, 0]].copy()
+                with owner._wgc_lock:
+                    owner._wgc_frame = rgb
+                owner._wgc_ready.set()
+
+            @cap.event
+            def on_closed():
+                owner._wgc_closed = True
+                owner._wgc_ready.set()   # unblock any waiter
+                logger.info("WGC capture session closed by the system.")
+
+            self._wgc_control = cap.start_free_threaded()
+            self._wgc_capture = cap
+            logger.info(
+                "WGC capture started for '%s'", self.actual_title
+            )
+            return True
+        except Exception as e:
+            logger.warning("Failed to start WGC capture: %s", e)
+            self._wgc_capture = None
+            self._wgc_control = None
+            return False
+
+    def _capture_via_wgc(self) -> Optional[np.ndarray]:
+        """Capture via Windows Graphics Capture API.
+
+        Returns an RGB ndarray, or ``None`` if WGC is unavailable / failed.
+        """
+        # Lazy-init
+        if self._wgc_capture is None and not self._wgc_closed:
+            if not self._start_wgc():
+                return None
+
+        # Wait for the first frame (or a very short timeout on subsequent)
+        timeout = 2.0 if self._frame_count <= 1 else 0.1
+        if not self._wgc_ready.wait(timeout=timeout):
+            logger.debug("WGC: no frame within %.1fs", timeout)
+            return None
+
+        if self._wgc_closed:
+            return None
+
+        with self._wgc_lock:
+            return self._wgc_frame.copy() if self._wgc_frame is not None else None
+
+    def _stop_wgc(self):
+        """Stop the WGC capture session and free resources."""
+        if self._wgc_control is not None:
+            try:
+                self._wgc_control.stop()
+            except Exception:
+                pass
+            self._wgc_control = None
+        self._wgc_capture = None
+        self._wgc_frame = None
+        self._wgc_ready.clear()
+        self._wgc_closed = False
+
     def capture(self) -> np.ndarray:
         """
         Capture window and return as numpy array.
 
-        Strategy:
-        1. Prefer GDI (PrintWindow with PW_RENDERFULLCONTENT) because it
-           captures the window content even when it is behind other windows
-           or partially off-screen.
-        2. Fall back to mss (Desktop Duplication API) when GDI returns an
-           empty frame (happens with some hardware-accelerated / DX windows
-           that refuse PrintWindow).  mss captures the screen region, so the
-           window must be visible on-screen for this path to work.
-        3. Cache which path works so subsequent frames skip the probe.
+        Strategy (probed on first frame, cached afterwards):
+        1. GDI (PrintWindow) — background-capable for non-DX windows.
+        2. WGC (Windows Graphics Capture) — background-capable for DX windows.
+        3. mss (Desktop Duplication) — last resort, window must be visible.
 
         Returns:
             numpy.ndarray: RGB image array (height, width, 3)
         """
         self._frame_count += 1
         try:
-            # Get window coordinates (needed for both paths and crop)
+            # Get window coordinates (needed for GDI/mss and crop)
             left, top, right, bottom = self._get_window_rect()
             width = right - left
             height = bottom - top
 
             # ----- Fast path: backend already chosen -----
-            if self._use_mss is True:
+            if self._backend == 'gdi':
+                img = self._capture_via_gdi(width, height)
+            elif self._backend == 'wgc':
+                img = self._capture_via_wgc()
+                if img is None:
+                    # WGC session died — fall back to mss
+                    logger.warning("WGC session lost — falling back to mss.")
+                    self._backend = 'mss'
+                    img = self._capture_via_mss()
+            elif self._backend == 'mss':
                 img = self._capture_via_mss()
-            elif self._use_mss is False:
-                img = self._capture_via_gdi(width, height)
             else:
-                # ----- First-frame probe: try GDI first, then mss -----
+                # ----- First-frame probe: GDI → WGC → mss -----
                 img = self._capture_via_gdi(width, height)
-                if self._is_mostly_black(img):
-                    logger.info(
-                        "GDI (PrintWindow/BitBlt) returned an empty frame — "
-                        "falling back to mss (Desktop Duplication). "
-                        "The window must stay visible on screen."
-                    )
-                    if MSS_AVAILABLE:
-                        img = self._capture_via_mss()
-                        self._use_mss = True
-                    else:
-                        logger.warning(
-                            "mss is not installed — stuck with GDI which "
-                            "returned an empty frame.  Install mss or keep "
-                            "the window visible."
-                        )
-                        self._use_mss = False
-                else:
-                    self._use_mss = False
+                if not self._is_mostly_black(img):
+                    self._backend = 'gdi'
                     logger.info(
                         "Using GDI (PrintWindow) capture — window does "
                         "NOT need to stay on top."
                     )
+                else:
+                    logger.info(
+                        "GDI (PrintWindow) returned an empty frame — "
+                        "trying WGC (Windows Graphics Capture)."
+                    )
+                    wgc_img = self._capture_via_wgc()
+                    if wgc_img is not None and not self._is_mostly_black(wgc_img):
+                        img = wgc_img
+                        self._backend = 'wgc'
+                        logger.info(
+                            "Using WGC capture — window does NOT need "
+                            "to stay on top."
+                        )
+                    elif MSS_AVAILABLE:
+                        logger.info(
+                            "WGC unavailable or returned empty frame — "
+                            "falling back to mss (Desktop Duplication). "
+                            "The window must stay visible on screen."
+                        )
+                        img = self._capture_via_mss()
+                        self._backend = 'mss'
+                    else:
+                        logger.warning(
+                            "Neither WGC nor mss available — stuck with "
+                            "GDI which returned an empty frame."
+                        )
+                        self._backend = 'gdi'
+
+            # ---- Re-probe: if frames keep coming back black, try next ----
+            if self._is_mostly_black(img):
+                self._consecutive_black += 1
+                if self._consecutive_black == 10:
+                    if self._backend == 'gdi':
+                        # Try WGC
+                        wgc_img = self._capture_via_wgc()
+                        if wgc_img is not None and not self._is_mostly_black(wgc_img):
+                            logger.warning(
+                                "10 black frames via GDI — switching to WGC."
+                            )
+                            self._backend = 'wgc'
+                            img = wgc_img
+                            self._consecutive_black = 0
+                        elif MSS_AVAILABLE:
+                            logger.warning(
+                                "10 black frames via GDI — switching to mss. "
+                                "The window must stay visible on screen."
+                            )
+                            self._backend = 'mss'
+                            img = self._capture_via_mss()
+                            self._consecutive_black = 0
+                    elif self._backend == 'wgc' and MSS_AVAILABLE:
+                        logger.warning(
+                            "10 black frames via WGC — switching to mss. "
+                            "The window must stay visible on screen."
+                        )
+                        self._stop_wgc()
+                        self._backend = 'mss'
+                        img = self._capture_via_mss()
+                        self._consecutive_black = 0
+                    elif self._backend == 'mss':
+                        logger.warning(
+                            "10 consecutive near-black frames via mss. "
+                            "Try running MSFS in Windowed or Borderless "
+                            "mode, or move the MSFS window so it is fully "
+                            "visible on screen."
+                        )
+            else:
+                self._consecutive_black = 0
 
             # Apply crop if specified
             if self.crop_region:
@@ -401,7 +571,7 @@ class WindowCapture:
 
         Only needed when using the mss fallback path (Desktop Duplication),
         which captures whatever is drawn at the screen coordinates.  When
-        GDI (PrintWindow) is used this is unnecessary.
+        GDI (PrintWindow) or WGC is used this is unnecessary.
         """
         try:
             flag = win32con.HWND_TOPMOST if enable else win32con.HWND_NOTOPMOST
@@ -419,6 +589,8 @@ class WindowCapture:
         # Remove TOPMOST so the window goes back to normal
         if self._was_topmost:
             self.pin_on_top(False)
+        # Stop WGC session
+        self._stop_wgc()
         if self._mss_instance is not None:
             try:
                 self._mss_instance.close()

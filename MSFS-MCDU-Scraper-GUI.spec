@@ -1,16 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-datas = [('config.yaml.example', '.'), ('docs', 'docs')]
-binaries = []
-hiddenimports = ['PIL', 'PIL._tkinter_finder', 'numpy', 'cv2', 'yaml', 'win32gui', 'win32ui', 'win32con', 'win32api']
-
 
 a = Analysis(
     ['src\\gui.py'],
     pathex=['src'],
-    binaries=binaries,
-    datas=datas,
-    hiddenimports=hiddenimports,
+    binaries=[],
+    datas=[('config.yaml.example', '.')],
+    hiddenimports=['PIL', 'PIL._tkinter_finder', 'numpy', 'cv2', 'yaml', 'win32gui', 'win32ui', 'win32con', 'win32api'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
