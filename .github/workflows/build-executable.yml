@@ -75,7 +75,11 @@ jobs:
         Copy-Item QUICKSTART.md release/
         Copy-Item LICENSE release/
         Copy-Item config.yaml.example release/
-        Copy-Item -Recurse docs release/
+        if (Test-Path docs) {
+          Copy-Item -Recurse docs release/
+        } else {
+          Write-Host "No docs directory found — skipping copying docs."
+        }
         # Create README for release
         @"
         # MSFS WinWing MCDU Scraper - Executable Release
