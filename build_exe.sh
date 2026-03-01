@@ -51,7 +51,6 @@ cp README.md release/
 cp QUICKSTART.md release/
 cp LICENSE release/
 cp config.yaml.example release/
-cp -r docs release/
 
 echo ""
 echo "Release package created in release/ folder"

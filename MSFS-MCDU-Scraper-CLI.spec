@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-datas = [('config.yaml.example', '.')]
+datas = [('config.yaml.example', '.'), ('docs', 'docs')]
 binaries = []
-hiddenimports = ['PIL', 'numpy', 'cv2', 'yaml']
+hiddenimports = ['PIL', 'numpy', 'cv2', 'yaml', 'windows_capture']
 
 
 a = Analysis(

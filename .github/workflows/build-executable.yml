@@ -44,6 +44,7 @@ jobs:
           --hidden-import=win32ui `
           --hidden-import=win32con `
           --hidden-import=win32api `
+          --hidden-import=windows_capture `
           src/gui.py
     
     - name: Build CLI Executable
@@ -58,6 +59,7 @@ jobs:
           --hidden-import=numpy `
           --hidden-import=cv2 `
           --hidden-import=yaml `
+          --hidden-import=windows_capture `
           src/main.py
     
     - name: Package Release
