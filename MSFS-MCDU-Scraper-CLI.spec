@@ -1,16 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-datas = [('config.yaml.example', '.'), ('docs', 'docs')]
-binaries = []
-hiddenimports = ['PIL', 'numpy', 'cv2', 'yaml', 'windows_capture']
-
 
 a = Analysis(
     ['src\\main.py'],
     pathex=['src'],
-    binaries=binaries,
-    datas=datas,
-    hiddenimports=hiddenimports,
+    binaries=[],
+    datas=[('config.yaml.example', '.')],
+    hiddenimports=['PIL', 'numpy', 'cv2', 'yaml'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

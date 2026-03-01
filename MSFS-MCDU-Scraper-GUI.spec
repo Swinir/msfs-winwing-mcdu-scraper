@@ -5,7 +5,7 @@ a = Analysis(
     ['src\\gui.py'],
     pathex=['src'],
     binaries=[],
-    datas=[('config.yaml.example', '.'), ('docs', 'docs')],
+    datas=[('config.yaml.example', '.')],
     hiddenimports=['PIL', 'PIL._tkinter_finder', 'numpy', 'cv2', 'yaml', 'win32gui', 'win32ui', 'win32con', 'win32api', 'windows_capture'],
     hookspath=[],
     hooksconfig={},
