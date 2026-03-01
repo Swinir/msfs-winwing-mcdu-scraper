@@ -291,10 +291,6 @@ class MCDUScraperGUI:
             
             # Create window capture with optional crop region
             self.capture = WindowCapture(window_handle=hwnd, crop_region=self.crop_region)
-
-            # Pin the window on top so mss can always see it,
-            # even when the user interacts with other applications.
-            self.capture.pin_on_top(True)
             
             if self.crop_region:
                 x, y, w, h = self.crop_region

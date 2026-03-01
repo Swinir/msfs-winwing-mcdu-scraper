@@ -1,6 +1,10 @@
 """
-Window-specific capture module for capturing windows even when minimized or behind other windows.
-Includes automatic fallback to mss screen capture for hardware-accelerated (DirectX/OpenGL) windows.
+Window-specific capture module.
+
+Prefers GDI (PrintWindow / BitBlt) so the target window does NOT need to
+be on top or visible.  Falls back to mss (Desktop Duplication API) for
+hardware-accelerated (DirectX/OpenGL) windows where GDI returns an empty
+frame — in that case the window must be visible on screen.
 """
 
 import logging
@@ -144,20 +148,23 @@ class WindowCapture:
         return sorted(windows, key=lambda x: x[1])
     
     @staticmethod
-    def _is_mostly_black(img: np.ndarray, threshold: float = 5.0) -> bool:
+    def _is_mostly_black(img: np.ndarray, max_threshold: int = 15) -> bool:
         """
-        Check if an image is mostly black (average brightness below threshold).
-        Hardware-accelerated windows (DirectX/OpenGL) often return all-black
-        frames when captured via BitBlt/PrintWindow.
+        Check if an image is essentially empty (all pixels very dark).
+
+        A truly blank capture (e.g. GDI failing on a DirectX window) will
+        have every pixel near zero.  An MCDU screen is dark overall but
+        contains bright text, so ``np.max`` will be well above the threshold.
 
         Args:
             img: RGB image as numpy array
-            threshold: Average brightness threshold (0-255)
+            max_threshold: If the brightest pixel is below this value the
+                frame is considered empty.
 
         Returns:
-            True if the image is mostly black
+            True if the image appears to be an empty / failed capture.
         """
-        return float(np.mean(img)) < threshold
+        return int(np.max(img)) < max_threshold
 
     def _get_mss(self):
         """Return a persistent mss instance, creating one if needed."""
@@ -218,10 +225,13 @@ class WindowCapture:
         Capture window and return as numpy array.
 
         Strategy:
-        1. If mss is available, prefer it (works for DX/OpenGL and gives
-           live frames via the Desktop Duplication API).
-        2. Fall back to GDI (PrintWindow/BitBlt) when mss is unavailable
-           or returns a blank frame.
+        1. Prefer GDI (PrintWindow with PW_RENDERFULLCONTENT) because it
+           captures the window content even when it is behind other windows
+           or partially off-screen.
+        2. Fall back to mss (Desktop Duplication API) when GDI returns an
+           empty frame (happens with some hardware-accelerated / DX windows
+           that refuse PrintWindow).  mss captures the screen region, so the
+           window must be visible on-screen for this path to work.
         3. Cache which path works so subsequent frames skip the probe.
 
         Returns:
@@ -240,23 +250,30 @@ class WindowCapture:
             elif self._use_mss is False:
                 img = self._capture_via_gdi(width, height)
             else:
-                # ----- First-frame probe: try mss first, then GDI -----
-                if MSS_AVAILABLE:
-                    img = self._capture_via_mss()
-                    if self._is_mostly_black(img):
-                        logger.info(
-                            "mss returned a black frame — falling back to "
-                            "GDI (PrintWindow/BitBlt) capture."
-                        )
-                        img = self._capture_via_gdi(width, height)
-                        self._use_mss = False
-                    else:
+                # ----- First-frame probe: try GDI first, then mss -----
+                img = self._capture_via_gdi(width, height)
+                if self._is_mostly_black(img):
+                    logger.info(
+                        "GDI (PrintWindow/BitBlt) returned an empty frame — "
+                        "falling back to mss (Desktop Duplication). "
+                        "The window must stay visible on screen."
+                    )
+                    if MSS_AVAILABLE:
+                        img = self._capture_via_mss()
                         self._use_mss = True
-                        logger.info("Using mss (Desktop Duplication) for live capture.")
+                    else:
+                        logger.warning(
+                            "mss is not installed — stuck with GDI which "
+                            "returned an empty frame.  Install mss or keep "
+                            "the window visible."
+                        )
+                        self._use_mss = False
                 else:
-                    img = self._capture_via_gdi(width, height)
                     self._use_mss = False
-                    logger.info("mss not available — using GDI capture.")
+                    logger.info(
+                        "Using GDI (PrintWindow) capture — window does "
+                        "NOT need to stay on top."
+                    )
 
             # Apply crop if specified
             if self.crop_region:
@@ -382,10 +399,9 @@ class WindowCapture:
     def pin_on_top(self, enable: bool = True):
         """Set or remove the 'always on top' flag for the captured window.
 
-        mss captures whatever is drawn at the screen coordinates, so the
-        target window must be visible.  Pinning it on top lets the user
-        interact with other applications while the small instrument window
-        stays visible.
+        Only needed when using the mss fallback path (Desktop Duplication),
+        which captures whatever is drawn at the screen coordinates.  When
+        GDI (PrintWindow) is used this is unnecessary.
         """
         try:
             flag = win32con.HWND_TOPMOST if enable else win32con.HWND_NOTOPMOST
