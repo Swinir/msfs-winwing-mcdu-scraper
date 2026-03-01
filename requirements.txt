@@ -5,3 +5,9 @@ Pillow>=10.0.0
 websockets>=12.0
 PyYAML>=6.0
 pywin32>=306; sys_platform == 'win32'
+
+# Optional — improves first-run OCR accuracy (template matching takes over after)
+easyocr>=1.7.0
+
+# Optional — AMD/Intel GPU acceleration on Windows (for EasyOCR bootstrap)
+torch-directml>=0.2.0

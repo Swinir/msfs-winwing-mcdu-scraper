@@ -1,5 +1,8 @@
 """
-Region selection dialog for visually selecting FMC/MCDU screen area
+Region selection dialog for visually selecting FMC/MCDU screen area.
+
+Includes an **Auto Detect** button that uses ``mcdu_detector`` to find
+the MCDU text grid automatically.
 """
 
 import tkinter as tk
@@ -7,6 +10,9 @@ from tkinter import ttk
 from PIL import Image, ImageTk, ImageDraw
 import numpy as np
 from typing import Optional, Tuple
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class RegionSelectorDialog:
@@ -123,6 +129,7 @@ class RegionSelectorDialog:
         button_frame = ttk.Frame(self.dialog)
         button_frame.pack(pady=10)
 
+        ttk.Button(button_frame, text="Auto Detect", command=self._on_auto_detect, width=15).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="OK", command=self._on_ok, width=15).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Cancel", command=self._on_cancel, width=15).pack(side=tk.LEFT, padx=5)
         ttk.Button(button_frame, text="Reset", command=self._on_reset, width=15).pack(side=tk.LEFT, padx=5)
@@ -302,6 +309,39 @@ class RegionSelectorDialog:
         my = int(img_h * 0.20)
         self.selection_rect = (mx, my, img_w - mx, img_h - my)
         self._update_canvas()
+
+    def _on_auto_detect(self):
+        """Run automatic MCDU region detection on the captured image."""
+        try:
+            from mcdu_detector import detect_mcdu_region
+        except ImportError:
+            logger.warning("mcdu_detector module not available")
+            return
+
+        img_array = np.array(self.original_image)
+        result = detect_mcdu_region(img_array, self.GRID_COLS, self.GRID_ROWS)
+
+        if result is None:
+            # Show message in the coord label
+            self.coord_label.config(
+                text="Auto-detect failed — no MCDU region found.  "
+                     "Adjust manually.",
+                foreground="red",
+            )
+            logger.info("Auto-detect did not find an MCDU region")
+            return
+
+        x, y, w, h = result
+        # Convert original-image coords → display coords
+        self.selection_rect = (
+            int(x * self.scale_factor),
+            int(y * self.scale_factor),
+            int((x + w) * self.scale_factor),
+            int((y + h) * self.scale_factor),
+        )
+        self._update_canvas()
+        self.coord_label.config(foreground="green")
+        logger.info("Auto-detect set region: x=%d y=%d w=%d h=%d", x, y, w, h)
 
     def _on_ok(self):
         if self.selection_rect:

@@ -9,6 +9,7 @@ import logging
 import asyncio
 import threading
 import sys
+import time as _time
 from pathlib import Path
 from typing import Optional
 import queue
@@ -23,7 +24,6 @@ else:
 import numpy as np
 from config import Config
 from window_capture import WindowCapture, WINDOWS_AVAILABLE
-from screen_capture import ScreenCapture
 from mcdu_parser import MCDUParser
 from mobiflight_client import MobiFlightClient
 from region_selector import RegionSelectorDialog
@@ -108,28 +108,7 @@ class MCDUScraperGUI:
         )
         title_label.grid(row=0, column=0, columnspan=2, pady=(0, 10))
         
-        # Capture Mode Selection
-        mode_frame = ttk.LabelFrame(main_frame, text="Capture Mode", padding="10")
-        mode_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
-        
-        self.capture_mode = tk.StringVar(value="window")
-        ttk.Radiobutton(
-            mode_frame, 
-            text="Window Capture (works when minimized)", 
-            variable=self.capture_mode, 
-            value="window",
-            command=self.on_mode_change
-        ).grid(row=0, column=0, sticky=tk.W, padx=5)
-        
-        ttk.Radiobutton(
-            mode_frame, 
-            text="Screen Region (from config.yaml)", 
-            variable=self.capture_mode, 
-            value="region",
-            command=self.on_mode_change
-        ).grid(row=0, column=1, sticky=tk.W, padx=5)
-        
-        # Window Selection (for window mode)
+        # Window Selection
         self.window_frame = ttk.LabelFrame(main_frame, text="Window Selection", padding="10")
         self.window_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
         
@@ -211,14 +190,6 @@ class MCDUScraperGUI:
             self.refresh_windows()
         else:
             self.log("Window capture not available (Windows only or pywin32 not installed)", level="WARNING")
-            self.capture_mode.set("region")
-            self.window_combo.config(state='disabled')
-    
-    def on_mode_change(self):
-        """Handle capture mode change"""
-        if self.capture_mode.get() == "window":
-            self.window_combo.config(state='readonly')
-        else:
             self.window_combo.config(state='disabled')
     
     def refresh_windows(self):
@@ -305,42 +276,29 @@ class MCDUScraperGUI:
                 messagebox.showerror("Error", "Configuration not loaded. Please check config.yaml")
                 return
             
-            # Get capture mode
-            mode = self.capture_mode.get()
+            if not WINDOWS_AVAILABLE:
+                messagebox.showerror("Error", "Window capture not available. Please install pywin32.")
+                return
             
-            if mode == "window":
-                if not WINDOWS_AVAILABLE:
-                    messagebox.showerror("Error", "Window capture not available. Please install pywin32.")
-                    return
-                
-                # Get selected window
-                selection = self.window_combo.current()
-                if selection < 0:
-                    messagebox.showerror("Error", "Please select a window to capture")
-                    return
-                
-                hwnd, title = self.window_list[selection]
-                self.log(f"Starting scraper with window: {title}")
-                
-                # Create window capture with optional crop region
-                self.capture = WindowCapture(window_handle=hwnd, crop_region=self.crop_region)
+            # Get selected window
+            selection = self.window_combo.current()
+            if selection < 0:
+                messagebox.showerror("Error", "Please select a window to capture")
+                return
+            
+            hwnd, title = self.window_list[selection]
+            self.log(f"Starting scraper with window: {title}")
+            
+            # Create window capture with optional crop region
+            self.capture = WindowCapture(window_handle=hwnd, crop_region=self.crop_region)
 
-                # Pin the window on top so mss can always see it,
-                # even when the user interacts with other applications.
-                self.capture.pin_on_top(True)
-                
-                if self.crop_region:
-                    x, y, w, h = self.crop_region
-                    self.log(f"Using crop region: X={x}, Y={y}, Width={w}, Height={h}")
-            else:
-                # Use screen region from config
-                if not self.config.get_captain_enabled():
-                    messagebox.showerror("Error", "Captain MCDU not enabled in config.yaml")
-                    return
-                
-                region = self.config.get_captain_region()
-                self.log(f"Starting scraper with screen region: {region}")
-                self.capture = ScreenCapture(region)
+            # Pin the window on top so mss can always see it,
+            # even when the user interacts with other applications.
+            self.capture.pin_on_top(True)
+            
+            if self.crop_region:
+                x, y, w, h = self.crop_region
+                self.log(f"Using crop region: X={x}, Y={y}, Width={w}, Height={h}")
             
             # Update UI
             self.running = True
@@ -445,10 +403,6 @@ class MCDUScraperGUI:
                             )
                     
                     # --- Fuzzy frame comparison (MSE) ---
-                    # Screen captures may have sub-pixel noise between
-                    # identical frames; an exact hash would re-run OCR
-                    # needlessly.
-                    import time as _time
                     _frame_changed = True
                     if _last_frame_img is not None and _last_display_data is not None:
                         if img.shape == _last_frame_img.shape:

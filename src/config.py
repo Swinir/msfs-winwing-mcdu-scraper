@@ -106,15 +106,6 @@ class Config:
         if 'captain' not in self.config_data['mcdu']:
             raise ValueError("Missing MCDU captain configuration")
         
-        # Validate screen region has required fields
-        captain = self.config_data['mcdu']['captain']
-        if captain.get('enabled', False):
-            region = captain.get('screen_region', {})
-            required_fields = ['top', 'left', 'width', 'height']
-            for field in required_fields:
-                if field not in region:
-                    raise ValueError(f"Missing required screen_region field: {field}")
-        
         logger.info("Configuration validation passed")
     
     def get_captain_enabled(self) -> bool:
@@ -124,14 +115,6 @@ class Config:
     def get_copilot_enabled(self) -> bool:
         """Check if copilot MCDU is enabled"""
         return self.config_data['mcdu'].get('copilot', {}).get('enabled', False)
-    
-    def get_captain_region(self) -> Dict[str, int]:
-        """Get captain screen region"""
-        return self.config_data['mcdu']['captain']['screen_region']
-    
-    def get_copilot_region(self) -> Dict[str, int]:
-        """Get copilot screen region"""
-        return self.config_data['mcdu']['copilot']['screen_region']
     
     def get_captain_url(self) -> str:
         """Get captain WebSocket URL"""

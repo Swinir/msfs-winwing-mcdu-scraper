@@ -1,19 +1,9 @@
 mcdu:
   captain:
     enabled: true
-    screen_region:
-      top: 400
-      left: 800
-      width: 480
-      height: 280
   
   copilot:
     enabled: false
-    screen_region:
-      top: 400
-      left: 1400
-      width: 480
-      height: 280
 
 mobiflight:
   captain_url: "ws://localhost:8320/winwing/cdu-captain"
@@ -24,3 +14,10 @@ mobiflight:
 performance:
   capture_fps: 30
   enable_caching: true
+
+# OCR settings (optional — sensible defaults are used if omitted)
+# ocr:
+#   # Template matching threshold (0.0–1.0).  Lower = more permissive.
+#   template_threshold: 0.78
+#   # EasyOCR confidence floor.  Detections below this are discarded.
+#   easyocr_min_confidence: 0.15

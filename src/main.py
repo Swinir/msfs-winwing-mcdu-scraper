@@ -8,9 +8,9 @@ import sys
 from pathlib import Path
 
 from config import Config
-from screen_capture import ScreenCapture
 from mcdu_parser import MCDUParser
 from mobiflight_client import MobiFlightClient
+from window_capture import WindowCapture
 
 
 # Configure logging
@@ -53,7 +53,6 @@ class MCDUScraper:
             await self._init_mcdu(
                 'captain',
                 self.config.get_captain_url(),
-                self.config.get_captain_region()
             )
         
         # Initialize copilot MCDU if enabled
@@ -62,7 +61,6 @@ class MCDUScraper:
             await self._init_mcdu(
                 'copilot',
                 self.config.get_copilot_url(),
-                self.config.get_copilot_region()
             )
         
         if not self.clients:
@@ -79,14 +77,13 @@ class MCDUScraper:
         logger.info("Starting main capture loop...")
         await self._main_loop()
     
-    async def _init_mcdu(self, name: str, websocket_uri: str, screen_region: dict):
+    async def _init_mcdu(self, name: str, websocket_uri: str):
         """
-        Initialize MCDU client and screen capture
+        Initialize MCDU client and window capture
         
         Args:
             name: MCDU name ('captain' or 'copilot')
             websocket_uri: WebSocket URI
-            screen_region: Screen region dictionary
         """
         # Create MobiFlight client
         client = MobiFlightClient(
@@ -95,10 +92,6 @@ class MCDUScraper:
             max_retries=self.config.get_max_retries()
         )
         self.clients[name] = client
-        
-        # Create screen capture
-        capture = ScreenCapture(screen_region)
-        self.captures[name] = capture
         
         # Start client connection task
         asyncio.create_task(client.run())
