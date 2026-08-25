@@ -1,124 +1,108 @@
 # MSFS A330 WinWing MCDU Scraper
 
-Captures the MSFS Airbus A330 MCDU display and sends it to WinWing CDU hardware via WebSocket.
+Captures the MSFS Airbus A330 MCDU display and sends it to WinWing CDU hardware
+via WebSocket.
 
 ## Features
 
-- Screen capture at 30 FPS (MSS library)
-- Window capture (minimized/hidden windows supported on Windows)
-- Interactive screen area selection GUI
-- 24×14 character extraction with color and font size detection
+- Window capture with automatic backend selection (GDI, Windows Graphics
+  Capture, or screen region) — hidden and minimised windows supported
+- Interactive screen-area selection with a 24x14 grid overlay and auto-detect
+- Character recognition by learned glyph templates, with EasyOCR bootstrap and
+  contour fallback for symbols
+- Per-cell colour and font-size detection
 - MobiFlight-compatible data format
-- Captain and Co-Pilot MCDU support
-- Automatic WebSocket reconnection
+- Captain and Co-Pilot MCDU support, each on its own capture pipeline
+- Automatic WebSocket reconnection with backoff
 - YAML configuration
 
 ## Requirements
 
-### Software Requirements
+### Software
 
-- **Python**: 3.8 or higher
-- **Operating System**: Windows (for MSS screen capture)
+- **Operating System**: Windows 10/11
 - **MobiFlight**: WinWing MCDU Connector must be running
-- **MSFS 2020/2024**: With default Airbus A330
+- **MSFS 2020/2024**: with the default Airbus A330
+- **Python**: 3.8 or higher (only when running from source)
 
-### Hardware Requirements
+### Hardware
 
-- **WinWing CDU**: Captain and/or Co-Pilot CDU hardware
-- **Display**: MSFS running on a display where MCDU can be positioned
+- **WinWing CDU**: Captain and/or Co-Pilot hardware
+- **Display**: MSFS running on a display where the MCDU can be positioned
 
 ## Installation
 
 ### Executable (Windows)
 
-Download the latest release from [Releases](https://github.com/Swinir/msfs-winwing-mcdu-scraper/releases):
+Download the latest release from
+[Releases](https://github.com/Swinir/msfs-winwing-mcdu-scraper/releases):
+
 - `MSFS-MCDU-Scraper-GUI.exe` — graphical interface
-- `MSFS-MCDU-Scraper-CLI.exe` — command-line
+- `MSFS-MCDU-Scraper-CLI.exe` — command line
 
 No Python or dependencies needed.
 
-### From Source
-
-1. Clone repository
+### From source
 
 ```bash
 git clone https://github.com/Swinir/msfs-winwing-mcdu-scraper.git
 cd msfs-winwing-mcdu-scraper
-```
 
-2. Create virtual environment
-
-```bash
 python -m venv venv
-venv\Scripts\activate  # On Windows
-```
+venv\Scripts\activate          # Windows
 
-3. Install dependencies
-
-```bash
 pip install -r requirements.txt
 ```
 
-4. Configure application
+The CLI also needs a configuration file:
 
 ```bash
 copy config.yaml.example config.yaml
 ```
 
-Edit `config.yaml` with your screen positions (see [Configuration Guide](#configuration-guide) and [Visual Guide](docs/VISUAL_GUIDE.md))
-
 ## Quick Start
 
-1. Start MSFS with A330
-2. Pop out MCDU window (right-click MCDU → "Pop Out")
-3. Start MobiFlight WinWing MCDU Connector
-4. Run GUI or CLI:
+1. Start MSFS with the A330
+2. Pop out the MCDU window (right-click the MCDU → "Pop Out")
+3. Start the MobiFlight WinWing MCDU Connector
+4. Run the GUI or the CLI
 
-**GUI**:
+**GUI** (recommended — no config file needed for the capture area):
+
 ```bash
 run_gui.bat       # Windows
 ./run_gui.sh      # Linux/Mac
 ```
 
-Select "Window Capture", choose your MCDU window, optionally select exact screen area, then click "Start Scraper".
+Select your MCDU window, click "Select Screen Area" to mark the MCDU display,
+then "Start Scraper".
 
 **CLI**:
+
 ```bash
 cd src && python main.py
 ```
 
-## FAQ
-
-**Window capture minimized/hidden?**  
-Yes (Windows only). Pop out MCDU, select in GUI, start scraper. Window can be minimized or hidden afterward.
-
-**Screen capture vs. window capture?**  
-Window capture (recommended) — grabs a specific window. Pop out MCDU and select from dropdown.  
-Screen region — grabs fixed screen coordinates (legacy, used if window capture unavailable).
-
-**Do I need to pop out MCDU?**  
-Recommended. Pop out provides consistent positioning. 2D panel also works but coordinates may shift with camera angle.
-
-**Screen coordinates for multiple monitors?**  
-`left` coordinate accounts for monitor position: primary starts at 0, secondary (right) at primary width (e.g., 1920).
-
-**Wrong coordinates captured?**  
-Black display or wrong content. See [Screen Calibration Guide](docs/CALIBRATION.md) or use GUI screen area selector.
-
-**Both Captain and Co-Pilot MCDUs?**  
-Enable both in `config.yaml` with separate screen coordinates.
-
-**Works with VR?**  
-Not directly. Capture from desktop mirror or pop-out window on monitor.
+See [QUICKSTART.md](QUICKSTART.md) for a step-by-step walkthrough.
 
 ## Configuration
 
-Edit `config.yaml`:
+Edit `config.yaml` (see `config.yaml.example` for the annotated version):
 
 ```yaml
 mcdu:
   captain:
     enabled: true
+    # Substring of the pop-out window title, matched case-insensitively.
+    window_title: "Microsoft Flight Simulator"
+    # Which part of that window holds the MCDU screen.  Coordinates are
+    # relative to the window's top-left corner.
+    crop:
+      x: 120
+      y: 80
+      width: 480
+      height: 280
+
   copilot:
     enabled: false
 
@@ -126,13 +110,74 @@ mobiflight:
   captain_url: "ws://localhost:8320/winwing/cdu-captain"
   copilot_url: "ws://localhost:8320/winwing/cdu-co-pilot"
   font: "AirbusThales"
+  # Consecutive failures tolerated before reconnects start backing off.
   max_retries: 3
 
 performance:
   capture_fps: 30
+  # Reuse the previous parse when a frame barely changed.
   enable_caching: true
+```
 
-See [docs/CALIBRATION.md](docs/CALIBRATION.md) for screen calibration.
+### The crop region
+
+This is the setting that most often decides whether the output is readable.
+Without it the **whole window** is carved into the 24x14 character grid, so the
+parse only makes sense if the window is exactly the MCDU display.
+
+The GUI sets it interactively. For the CLI, run the GUI once, use "Select
+Screen Area" (or "Auto Detect"), and copy the reported `X`, `Y`, `W`, `H` into
+the `crop` block.
+
+## FAQ
+
+**Can it capture a minimised or hidden window?**
+Yes, when capture lands on the GDI or WGC backend — the log says which one is
+in use. The mss fallback needs the window visible on screen.
+
+**Do I need to pop out the MCDU?**
+Recommended. A pop-out gives consistent positioning. The 2D panel works too,
+but the crop region shifts with the camera angle.
+
+**Both Captain and Co-Pilot?**
+Enable both in `config.yaml`, each with its own `window_title` and `crop`.
+They run as independent pipelines.
+
+**Does it work with VR?**
+Not directly. Capture from the desktop mirror or a pop-out window on a monitor.
+
+**Why is the first run slow?**
+It spends roughly 30 seconds learning glyph templates from EasyOCR. Afterwards
+recognition uses those templates and is fast. They are saved to `templates/`,
+so it happens once. The GUI's "Delete Templates" button forces a relearn.
+
+## How It Works
+
+1. **Capture** — grab the MCDU window. Backends are probed on the first frame:
+   GDI (`PrintWindow`) → Windows Graphics Capture → mss (Desktop Duplication).
+2. **Parse** — split the image into a 24x14 grid and identify each cell:
+   learned templates first, then EasyOCR, then contour heuristics for symbols.
+   Colour and font size come from per-cell pixel analysis.
+3. **Stabilise** — a cell only changes once its new value has held for several
+   consecutive frames, which stops OCR jitter reaching the hardware.
+4. **Send** — forward the grid over WebSocket in MobiFlight's JSON format, but
+   only when it actually changed.
+
+The scraper never talks to MSFS directly — it processes whatever is on screen.
+
+**Data format** (MobiFlight JSON):
+
+```json
+{
+  "Target": "Display",
+  "Data": [["A", "w", 0], ["B", "c", 1], [], "..."]
+}
+```
+
+Colour codes: `w`=white, `c`=cyan, `g`=green, `a`=amber, `r`=red, `y`=yellow,
+`m`=magenta, `e`=grey
+Font sizes: `0`=large, `1`=small
+Grid: 24 columns x 14 rows (336 cells)
 
 ## Project Structure
 
@@ -141,91 +186,68 @@ msfs-winwing-mcdu-scraper/
 ├── src/
 │   ├── main.py                 # Entry point (CLI)
 │   ├── gui.py                  # GUI application
+│   ├── pipeline.py             # Shared capture/parse/stabilise/send loop
 │   ├── config.py               # Configuration
-│   ├── window_capture.py       # Window/screen capture (MSS, GDI)
-│   ├── mcdu_parser.py          # OCR, template matching, character extraction
-│   ├── mcdu_detector.py        # Auto MCDU region detection
-│   ├── region_selector.py      # Interactive region selection GUI
+│   ├── window_capture.py       # Window capture (GDI, WGC, mss)
+│   ├── mcdu_parser.py          # Templates, OCR, character extraction
+│   ├── mcdu_detector.py        # Automatic MCDU region detection
+│   ├── region_selector.py      # Interactive region selection dialog
 │   ├── mobiflight_client.py    # WebSocket communication
-│   └── screen_capture.py       # Legacy screen capture
-├── tests/                       # Unit tests
-├── templates/                   # Learned character templates (runtime)
-├── requirements.txt             # Python dependencies
-├── config.yaml.example          # Configuration template
-└── docs/
-    ├── SETUP.md                # Setup instructions
-    ├── CALIBRATION.md          # Screen calibration guide
-    └── VISUAL_GUIDE.md         # Visual setup guide
+│   └── screen_capture.py       # Legacy fixed-region screen capture
+├── tests/                      # Unit tests
+├── templates/                  # Learned glyph templates (runtime)
+├── requirements.txt            # Python dependencies
+├── config.yaml.example         # Annotated configuration template
+├── ISSUES.md                   # Known issues and their status
+└── QUICKSTART.md               # Step-by-step setup guide
 ```
-
-## How It Works
-
-1. Screen capture (MSS library) — 30 FPS
-2. Image analysis (OCR + contour detection) — extract characters, colors, font sizes
-3. WebSocket transmission (MobiFlight JSON format) — send to WinWing CDU
-4. Repeat
-
-The scraper doesn't interact with MSFS directly—it captures and processes whatever is displayed on screen.
-
-**Data format** (MobiFlight JSON):
-```json
-{
-  "Target": "Display",
-  "Data": [["A", "w", 0], ["B", "c", 1], [], ...]
-}
-```
-
-Color codes: `w`=white, `c`=cyan, `g`=green, `a`=amber, `r`=red, `y`=yellow, `m`=magenta, `e`=grey  
-Font sizes: `0`=large, `1`=small  
-Grid: 24 columns × 14 rows (336 cells total)
 
 ## Troubleshooting
 
-**WebSocket connection refused**  
-Ensure MobiFlight WinWing MCDU Connector is running on `localhost:8320`.
+**WebSocket connection refused**
+Ensure the MobiFlight WinWing MCDU Connector is running on `localhost:8320`.
+The client keeps retrying and backs off as failures repeat.
 
-**No characters detected**  
-Verify screen coordinates are correct and MCDU is visible in MSFS. Check brightness/contrast settings.
+**No characters detected**
+Check the crop region first — this is nearly always the cause. Use the GUI's
+grid overlay to confirm cell boundaries fall between characters.
 
-**Low frame rate**  
-Reduce `capture_fps` in config (try 15-20) or close other applications.
+**"Captured image is nearly all black"**
+The backend is not seeing window content. Try Windowed or Borderless mode and
+keep the window visible.
 
-**Incorrect colors**  
-Check MSFS brightness/gamma settings. Ensure HDR is not enabled.
+**Wrong characters**
+Let the warmup finish. If glyphs remain wrong, use "Delete Templates" and
+restart so they are relearned.
+
+**Low frame rate**
+Reduce `capture_fps` to 15-20 and keep `enable_caching: true`.
+
+**Incorrect colours**
+Check MSFS brightness/gamma. Ensure HDR is not enabled.
 
 ## Performance
 
-Optimal settings: 20-30 FPS, caching enabled, screen region minimized to exact MCDU area.
+Sensible settings: 20-30 FPS, caching enabled, crop region trimmed to the MCDU
+display only.
 
-System requirements: quad-core CPU (i5/Ryzen 5+), 4GB+ RAM. GPU not required.
-
-## Advanced
-
-**Both MCDUs**: Enable both `captain` and `copilot` in config with different display coordinates.
-
-**Custom fonts**: Change `font` setting in config (e.g., `Boeing737`).
-
-**Logging**: Console output at INFO level. File output to `mcdu_scraper.log`. Edit `main.py` to change log level.
+Rough requirements: quad-core CPU (i5/Ryzen 5 or better), 4 GB RAM. No GPU
+needed — template matching is CPU-only. A CUDA GPU speeds up the one-time
+EasyOCR warmup if PyTorch finds one.
 
 ## Development
 
-Run tests: `pytest tests/`
+Run the tests:
 
-Code structure:
-- `config.py` — configuration
-- `window_capture.py` — window/screen capture
-- `mcdu_parser.py` — image processing, OCR, template matching
-- `mcdu_detector.py` — automatic MCDU region detection
-- `mobiflight_client.py` — WebSocket communication
-- `main.py` — entry point
+```bash
+pytest tests/
+```
 
-## Changelog
-
-**v1.0** (2024) — Initial release
+Known issues and their current status are tracked in [ISSUES.md](ISSUES.md).
 
 ## License
 
-Private/Proprietary
+MIT — see [LICENSE](LICENSE).
 
 ## Support
 

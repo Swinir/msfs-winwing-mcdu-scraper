@@ -130,7 +130,7 @@ than absent ones.
 
 ## #8 — Documentation is stale and self-contradictory
 
-**Type:** docs · **Severity:** low · **Status:** open
+**Type:** docs · **Severity:** low · **Status:** FIXED
 
 - `docs/` was deleted in 5fd630a, but `README.md` links to
   `docs/CALIBRATION.md` and `docs/VISUAL_GUIDE.md`, and `QUICKSTART.md` links

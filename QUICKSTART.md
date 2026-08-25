@@ -1,260 +1,173 @@
 # Quick Start Guide
 
-Get up and running with the MSFS A330 WinWing MCDU Scraper in 5 minutes!
+Get the MSFS A330 WinWing MCDU Scraper running in about five minutes.
 
-## NEW: GUI Mode (Easiest!) 🎉
+## What it does
 
-**The simplest way to use this scraper** - no configuration files needed!
+MSFS draws the A330 MCDU on screen.  This app screenshots that window, reads
+the 24x14 character grid back out of the pixels, and forwards it to MobiFlight,
+which drives your physical WinWing CDU display.
 
-### What's New?
+It does not talk to the simulator directly — it reads whatever is on screen.
 
-- **Window Capture**: Select MCDU window from dropdown - works even when minimized!
-- **GUI Interface**: Easy point-and-click interface with live logs
-- **No Coordinates**: No need to manually configure screen positions
-- **Works Behind Windows**: Keep MCDU minimized or behind other applications
+## Before you start
 
-### 2-Minute Quick Start with GUI
-
-1. **Pop out MCDU** in MSFS (right-click → "Pop Out")
-2. **Start MobiFlight** WinWing MCDU Connector
-3. **Run GUI**: Double-click `run_gui.bat` (Windows)
-4. **Select Window** from dropdown (look for "MCDU" or "Flight Simulator")
-5. **Click "Start Scraper"** → Done!
-
-Your MCDU window can now be minimized or behind other windows - it will still work! 🎉
-
----
-
-## How Does This Work?
-
-**Simple explanation**: This application captures your MSFS MCDU display and sends the content to your WinWing CDU hardware.
-
-### Two Capture Methods
-
-**NEW - Window Capture** (Recommended):
-1. You select the MCDU window from a dropdown
-2. The scraper captures that specific window 30 times per second
-3. Works even when window is minimized or behind other windows
-4. It sends this information to your WinWing CDU via network connection
-5. Your physical WinWing CDU displays exactly what MSFS shows
-
-**Original - Screen Region Capture**:
-1. You tell the scraper where your MCDU is on screen (coordinates in config.yaml)
-2. The scraper captures that screen area 30 times per second
-3. It reads the characters, colors, and detects what's displayed
-4. It sends this information to your WinWing CDU via network connection
-5. Your physical WinWing CDU displays exactly what MSFS shows
-
-## 2D Panel vs Pop-Out MCDU
-
-You can capture the MCDU in two ways:
-
-### Option 1: 2D Cockpit Panel (Simple)
-- Just display the MCDU in your normal cockpit view
-- Configure where it appears on your screen
-- May shift if you move the camera
-
-### Option 2: Pop-Out Window (Recommended ⭐)
-- Right-click MCDU in MSFS → "Pop Out"
-- Position window consistently (same spot each time)
-- More reliable, easier to configure
-
-## Prerequisites Checklist
-
-Before starting, ensure you have:
-
-- [ ] Python 3.8+ installed
-- [ ] Tesseract OCR installed and in PATH
-- [ ] MSFS 2020/2024 with Airbus A330
+- [ ] Windows 10/11
+- [ ] MSFS 2020/2024 with the default Airbus A330
 - [ ] WinWing CDU hardware
-- [ ] MobiFlight WinWing MCDU Connector installed
+- [ ] MobiFlight **WinWing MCDU Connector** installed and running
+- [ ] Python 3.8+ — only if running from source (the `.exe` needs nothing)
 
-## 5-Minute Setup
+## Fastest path: the GUI
 
-### Step 1: Install (2 minutes)
+The GUI needs no configuration file for the capture area — you select it
+visually.
+
+1. **Pop out the MCDU** in MSFS: right-click the MCDU → "Pop Out".
+2. **Start MobiFlight** WinWing MCDU Connector.
+3. **Run the GUI**: double-click `MSFS-MCDU-Scraper-GUI.exe`, or `run_gui.bat`
+   from source.
+4. **Select your window** from the dropdown (look for "Flight Simulator" or
+   "MCDU"). Tick "Show all windows" if it is not listed.
+5. **Click "Select Screen Area"**, then "Auto Detect" — or drag a box around
+   just the MCDU screen. The 24x14 grid overlay shows how the characters will
+   be carved up; the boundaries should sit between characters, not through them.
+6. **Click "Start Scraper"**.
+
+The first run spends roughly 30 seconds learning glyph shapes ("Template
+warmup" in the log). After that, recognition runs from the learned templates
+and is fast. The learned glyphs are saved, so this happens once.
+
+Once running, the MCDU window may be minimised or behind other windows,
+provided capture landed on the GDI or WGC backend (the log says which).
+
+## From source
 
 ```bash
-# Clone repository
 git clone https://github.com/Swinir/msfs-winwing-mcdu-scraper.git
 cd msfs-winwing-mcdu-scraper
 
-# Create virtual environment
 python -m venv venv
+venv\Scripts\activate          # Windows
 
-# Activate (Windows)
-venv\Scripts\activate
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-### Step 2: Configure (2 minutes)
+Then run the GUI:
 
 ```bash
-# Copy example config
-copy config.yaml.example config.yaml
-
-# Edit config.yaml with your screen coordinates
-notepad config.yaml
+run_gui.bat
 ```
 
-Minimal configuration:
+## Using the CLI
+
+The CLI has no window picker, so it needs `config.yaml`:
+
+```bash
+copy config.yaml.example config.yaml
+```
+
+A minimal working configuration:
+
 ```yaml
 mcdu:
   captain:
     enabled: true
-    screen_region:
-      top: 400      # Change these!
-      left: 800
+    # Substring of the pop-out window's title, matched case-insensitively.
+    window_title: "Microsoft Flight Simulator"
+    # Which part of that window holds the MCDU screen.
+    crop:
+      x: 120
+      y: 80
       width: 480
       height: 280
+
+mobiflight:
+  captain_url: "ws://localhost:8320/winwing/cdu-captain"
+  font: "AirbusThales"
+
+performance:
+  capture_fps: 30
 ```
 
-**Need help finding coordinates?** See [docs/CALIBRATION.md](docs/CALIBRATION.md)
+**The `crop` block matters.** Without it the entire window is carved into the
+24x14 grid, which only produces sensible output if the window happens to be
+exactly the MCDU screen. The CLI warns when no crop is configured.
 
-### Step 3: Run (1 minute)
+Easiest way to find the numbers: run the GUI once, use "Select Screen Area",
+and copy the `X`, `Y`, `W`, `H` values it reports into the `crop` block.
+
+Then:
 
 ```bash
-# Start MobiFlight WinWing MCDU Connector first!
-
-# Then run scraper
-cd src
-python main.py
+cd src && python main.py
 ```
 
-## Expected Output
+Expected output:
 
-You should see:
 ```
 ============================================================
 MSFS A330 WinWing MCDU Scraper
 ============================================================
 ... Configuration loaded successfully
 ... Initializing Captain MCDU...
+... Captain MCDU crop region: x=120, y=80, w=480, h=280
 ... MobiFlight connected at ws://localhost:8320/winwing/cdu-captain
 ... Font set to: AirbusThales
-... Starting main capture loop...
-... Main loop running at 30 FPS
+... Starting capture pipelines...
+... Captain pipeline running at 30 FPS
 ```
 
-Your WinWing CDU should now display the MCDU content from MSFS!
+## Both MCDUs
 
-## Quick Troubleshooting
+Enable each one with its own window and crop:
 
-### "No config.yaml found"
-→ Copy `config.yaml.example` to `config.yaml`
-
-### "WebSocket error: Connection refused"
-→ Start MobiFlight WinWing MCDU Connector first
-
-### "TesseractNotFoundError"
-→ Install Tesseract OCR and add to PATH
-
-### "Module not found" errors
-→ Activate virtual environment and run `pip install -r requirements.txt`
-
-### Black/empty display on WinWing
-→ Check screen coordinates in config.yaml (see CALIBRATION.md)
-
-## Next Steps
-
-Once running:
-
-1. **Fine-tune coordinates**: Adjust screen region for perfect capture
-2. **Adjust FPS**: Lower if CPU usage is high
-3. **Enable co-pilot**: Set `copilot.enabled: true` if needed
-4. **Check logs**: Review `mcdu_scraper.log` for issues
-
-## Alternative: Using Scripts
-
-### Windows
-```bash
-run.bat
-```
-
-### Linux/Mac
-```bash
-./run.sh
-```
-
-## Demo Mode
-
-Test without MSFS/WinWing:
-```bash
-python demo.py
-```
-
-## Help & Support
-
-- **Full Documentation**: See [README.md](README.md)
-- **Setup Guide**: See [docs/SETUP.md](docs/SETUP.md)
-- **Calibration**: See [docs/CALIBRATION.md](docs/CALIBRATION.md)
-- **Issues**: Open an issue on GitHub
-
-## Configuration Reference
-
-### Minimum Config
 ```yaml
 mcdu:
   captain:
     enabled: true
-    screen_region:
-      top: 400
-      left: 800
-      width: 480
-      height: 280
-```
+    window_title: "Microsoft Flight Simulator"
+    crop: { x: 120, y: 80, width: 480, height: 280 }
 
-### Dual MCDU Config
-```yaml
-mcdu:
-  captain:
-    enabled: true
-    screen_region: { top: 400, left: 800, width: 480, height: 280 }
-  
   copilot:
     enabled: true
-    screen_region: { top: 400, left: 1400, width: 480, height: 280 }
+    window_title: "Microsoft Flight Simulator (1)"
+    crop: { x: 120, y: 80, width: 480, height: 280 }
 ```
 
-### Performance Tuning
-```yaml
-performance:
-  capture_fps: 20        # Lower for better CPU usage
-  enable_caching: true   # Keep enabled for speed
-```
+Each runs its own capture pipeline concurrently.
 
-## Common Screen Coordinates
+## Troubleshooting
 
-### 1920x1080 Fullscreen
-```yaml
-screen_region:
-  top: 400
-  left: 800
-  width: 480
-  height: 280
-```
+**"No config.yaml found"**
+Copy `config.yaml.example` to `config.yaml`. Only the CLI needs this.
 
-### 2560x1440 Fullscreen
-```yaml
-screen_region:
-  top: 550
-  left: 1040
-  width: 480
-  height: 280
-```
+**"WebSocket connection closed" / connection refused**
+Start the MobiFlight WinWing MCDU Connector first. It listens on
+`localhost:8320`. The scraper keeps retrying, backing off as failures repeat.
 
-### Pop-out Window (Secondary Monitor)
-```yaml
-screen_region:
-  top: 0
-  left: 1920    # Primary monitor width
-  width: 480
-  height: 280
-```
+**Blank or garbled CDU display**
+Almost always the capture area. Use the GUI's "Select Screen Area" and check
+the grid overlay lines up with the characters. For the CLI, check `crop`.
 
----
+**"Captured image is nearly all black"**
+The capture backend is not seeing the window content. Try running MSFS in
+Windowed or Borderless mode, and keep the window visible — the log says which
+backend is in use, and only GDI and WGC work for hidden windows.
 
-**Ready to fly!** 🛫
+**Wrong characters**
+Let the warmup finish. If glyphs stay wrong, use "Delete Templates" in the GUI
+and restart the scraper to relearn from scratch.
 
-Your MCDU scraper should now be running and displaying on your WinWing CDU.
+**Low frame rate**
+Lower `capture_fps` to 15-20, and keep `enable_caching: true`.
+
+**"Module not found"**
+Activate the virtual environment and re-run
+`pip install -r requirements.txt`.
+
+## Next steps
+
+- Full documentation: [README.md](README.md)
+- Check `mcdu_scraper.log` when something misbehaves
+- Report problems on [GitHub](https://github.com/Swinir/msfs-winwing-mcdu-scraper/issues)
