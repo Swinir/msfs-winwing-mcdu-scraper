@@ -23,7 +23,7 @@ via WebSocket.
 - **Operating System**: Windows 10/11
 - **MobiFlight**: WinWing MCDU Connector must be running
 - **MSFS 2020/2024**: with the default Airbus A330
-- **Python**: 3.8 or higher (only when running from source)
+- **Python**: 3.9-3.13 (only when running from source; PySide6 sets the range)
 
 ### Hardware
 

@@ -16,7 +16,7 @@ It does not talk to the simulator directly — it reads whatever is on screen.
 - [ ] MSFS 2020/2024 with the default Airbus A330
 - [ ] WinWing CDU hardware
 - [ ] MobiFlight **WinWing MCDU Connector** installed and running
-- [ ] Python 3.8+ — only if running from source (the `.exe` needs nothing)
+- [ ] Python 3.9-3.13 — only if running from source (the `.exe` needs nothing)
 
 ## Fastest path: the GUI
 
