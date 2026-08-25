@@ -85,6 +85,11 @@ def sanitise_display_data(display_data: list) -> list:
 
 class MobiFlightClient:
     """WebSocket client for MobiFlight/WinWing CDU communication"""
+
+    #: Delay between the first few reconnect attempts, in seconds.
+    BASE_RETRY_DELAY = 2.0
+    #: Upper bound on the backoff delay, in seconds.
+    MAX_RETRY_DELAY = 30.0
     
     def __init__(self, websocket_uri: str, font: str = "AirbusThales", max_retries: int = 3):
         """
@@ -93,7 +98,11 @@ class MobiFlightClient:
         Args:
             websocket_uri: WebSocket URI (e.g., ws://localhost:8320/winwing/cdu-captain)
             font: Font name to use (default: AirbusThales)
-            max_retries: Maximum connection retry attempts
+            max_retries: Consecutive failures tolerated at the base retry
+                delay before the client starts backing off exponentially.
+                The client never stops trying — MobiFlight is often simply
+                not running yet — so this controls how fast it gives the
+                socket a rest, not whether it gives up.
         """
         self.websocket = None
         self.connected = asyncio.Event()
@@ -129,6 +138,32 @@ class MobiFlightClient:
             self.retries = 0
             self.connected.set()
 
+    def _retry_delay(self) -> float:
+        """Seconds to wait before the next reconnect attempt.
+
+        Retries stay at BASE_RETRY_DELAY while the failure count is within
+        max_retries, then double up to MAX_RETRY_DELAY.  This is what
+        max_retries actually controls: previously it was stored, incremented
+        against, and never read, so a mistyped URL reconnected every two
+        seconds forever and filled the log.
+        """
+        if self.retries <= self.max_retries:
+            return self.BASE_RETRY_DELAY
+        excess = self.retries - self.max_retries
+        return min(self.BASE_RETRY_DELAY * (2 ** excess), self.MAX_RETRY_DELAY)
+
+    def _log_retry(self, reason: str) -> None:
+        """Report a failed connection, escalating once past max_retries."""
+        delay = self._retry_delay()
+        message = (
+            "%s for %s (attempt %d) — retrying in %.0fs"
+        )
+        args = (reason, self.websocket_uri, self.retries, delay)
+        if self.retries > self.max_retries:
+            logger.error(message, *args)
+        else:
+            logger.warning(message, *args)
+
     async def run(self):
         """Connect to MobiFlight WebSocket server and maintain connection.
 
@@ -148,21 +183,18 @@ class MobiFlightClient:
                     pass  # nothing received — that's fine
 
             except websockets.exceptions.ConnectionClosed:
-                logger.warning(f"WebSocket connection closed for {self.websocket_uri}")
                 self.websocket = None
                 self.connected.clear()
                 self.retries += 1
-                await asyncio.sleep(2)
+                self._log_retry("WebSocket connection closed")
+                await asyncio.sleep(self._retry_delay())
 
             except Exception as e:
-                self.retries += 1
-                logger.error(
-                    f"WebSocket error for {self.websocket_uri}: {e}, "
-                    f"retry {self.retries}"
-                )
                 self.websocket = None
                 self.connected.clear()
-                await asyncio.sleep(2)
+                self.retries += 1
+                self._log_retry(f"WebSocket error ({e})")
+                await asyncio.sleep(self._retry_delay())
     
     async def _set_font(self):
         """Send font configuration to WinWing CDU"""

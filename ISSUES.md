@@ -114,7 +114,7 @@ pass it through).
 
 ## #7 — Dead configuration surfaces
 
-**Type:** cleanup · **Severity:** low · **Status:** open
+**Type:** cleanup · **Severity:** low · **Status:** FIXED
 
 Three config/API surfaces that do nothing:
 

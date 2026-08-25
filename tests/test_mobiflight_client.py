@@ -10,6 +10,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 from mobiflight_client import (
+    MobiFlightClient,
     sanitise_display_data,
     _CDU_SAFE_CHARS,
     _CDU_CHAR_MAP,
@@ -83,6 +84,50 @@ class TestSanitiseDisplayData(unittest.TestCase):
         data = [["(", "w", 0]]
         sanitise_display_data(data)
         self.assertEqual(data[0][0], "(")
+
+
+class TestRetryBackoff(unittest.TestCase):
+    """max_retries controls how fast the client backs off, not whether it quits."""
+
+    def _client(self, max_retries=3):
+        return MobiFlightClient("ws://localhost:8320/test", max_retries=max_retries)
+
+    def test_delay_is_flat_within_max_retries(self):
+        c = self._client(max_retries=3)
+        for attempt in range(0, 4):
+            c.retries = attempt
+            self.assertEqual(c._retry_delay(), MobiFlightClient.BASE_RETRY_DELAY)
+
+    def test_delay_grows_past_max_retries(self):
+        c = self._client(max_retries=3)
+        c.retries = 4
+        first = c._retry_delay()
+        c.retries = 5
+        second = c._retry_delay()
+        self.assertGreater(first, MobiFlightClient.BASE_RETRY_DELAY)
+        self.assertGreater(second, first)
+
+    def test_delay_is_capped(self):
+        c = self._client(max_retries=3)
+        c.retries = 500
+        self.assertEqual(c._retry_delay(), MobiFlightClient.MAX_RETRY_DELAY)
+
+    def test_max_retries_actually_changes_behaviour(self):
+        """Regression: the setting used to be stored and never read."""
+        patient = self._client(max_retries=10)
+        impatient = self._client(max_retries=1)
+        patient.retries = impatient.retries = 5
+        self.assertLess(
+            patient._retry_delay(), impatient._retry_delay(),
+            "max_retries had no effect on the retry delay",
+        )
+
+    def test_client_never_stops_running(self):
+        """Backing off must not turn into giving up."""
+        c = self._client(max_retries=1)
+        c.retries = 1000
+        self.assertTrue(c.running)
+        self.assertLessEqual(c._retry_delay(), MobiFlightClient.MAX_RETRY_DELAY)
 
 
 if __name__ == "__main__":
