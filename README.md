@@ -6,7 +6,7 @@ via WebSocket.
 ## Features
 
 - Window capture with automatic backend selection (GDI, Windows Graphics
-  Capture, or screen region) — hidden and minimised windows supported
+  Capture, or screen region) — no need to keep the window on top
 - Interactive screen-area selection with a 24x14 grid overlay and auto-detect
 - Character recognition by learned glyph templates, with EasyOCR bootstrap and
   contour fallback for symbols
@@ -131,9 +131,21 @@ the `crop` block.
 
 ## FAQ
 
-**Can it capture a minimised or hidden window?**
-Yes, when capture lands on the GDI or WGC backend — the log says which one is
-in use. The mss fallback needs the window visible on screen.
+**Does the MCDU window need to be pinned on top?**
+No. Measured behaviour of the three backends:
+
+| backend | occluded | minimised |
+|---|---|---|
+| GDI | captures correctly | black frame |
+| WGC | captures correctly | captures correctly |
+| mss | captures whatever is **on top** | black frame |
+
+The log says which backend is in use. Only mss reads screen pixels, so only
+mss cares what covers the window — and mss is the last resort, reached when
+the other two fail. MSFS renders with DirectX, which usually defeats GDI, so
+`windows-capture` (the WGC backend) is what keeps you off mss. It is a
+required dependency for that reason; without it you are on mss and the window
+must stay visible and uncovered.
 
 **Do I need to pop out the MCDU?**
 Recommended. A pop-out gives consistent positioning. The 2D panel works too,

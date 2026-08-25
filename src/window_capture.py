@@ -46,6 +46,14 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+if sys.platform == 'win32' and not WGC_AVAILABLE:
+    logger.warning(
+        "windows-capture is not installed. MSFS renders with DirectX, so GDI "
+        "capture usually returns a black frame and the only fallback left is "
+        "mss, which reads screen pixels -- meaning the MCDU window must stay "
+        "visible and uncovered. Install it with: pip install windows-capture"
+    )
+
 # Platform-specific imports
 if sys.platform == 'win32':
     try:
@@ -62,10 +70,28 @@ else:
 
 
 class WindowCapture:
+    """Captures one window, choosing a backend that suits it.
+
+    Measured behaviour of the three backends:
+
+    ==========  ===================  =========  ==========
+    backend     needs to be on top?  occluded   minimised
+    ==========  ===================  =========  ==========
+    GDI         no                   works      black
+    WGC         no                   works      works
+    mss         yes                  captures   black
+                                     whatever
+                                     is on top
+    ==========  ===================  =========  ==========
+
+    So the window never needs pinning on GDI or WGC.  Only the mss fallback
+    reads screen pixels and therefore captures whatever covers the window --
+    and mss is only reached when the other two fail, which for a DirectX
+    window like an MSFS pop-out means when windows-capture is not installed.
     """
-    Window-specific capture class for capturing specific windows
-    Works even when window is minimized or behind other windows (Windows only)
-    """
+
+    #: Black frames tolerated before trying the next backend.
+    BLACK_FRAMES_BEFORE_REPROBE = 10
     
     def __init__(self, window_title: Optional[str] = None, window_handle: Optional[int] = None, 
                  crop_region: Optional[Tuple[int, int, int, int]] = None):
@@ -115,7 +141,6 @@ class WindowCapture:
         
         # Get actual window title
         self.actual_title = win32gui.GetWindowText(self.hwnd)
-        self._was_topmost = False  # track whether we set TOPMOST
         logger.info(f"Window capture initialized for: {self.actual_title} (HWND: {self.hwnd})")
         if self.crop_region:
             logger.info(f"Crop region set: x={self.crop_region[0]}, y={self.crop_region[1]}, "
@@ -266,11 +291,26 @@ class WindowCapture:
             return False
 
         try:
-            cap = WindowsCapture(
-                cursor_capture=False,
-                draw_border=False,
-                window_name=self.actual_title,
-            )
+            # Prefer the handle: two MSFS pop-outs can share a title, and
+            # matching by name would attach the co-pilot capture to the
+            # captain's window.  Older windows-capture releases only accept
+            # a name, so fall back to that.
+            try:
+                cap = WindowsCapture(
+                    cursor_capture=False,
+                    draw_border=False,
+                    window_hwnd=self.hwnd,
+                )
+            except TypeError:
+                logger.debug(
+                    "windows-capture does not accept window_hwnd; "
+                    "falling back to matching by title."
+                )
+                cap = WindowsCapture(
+                    cursor_capture=False,
+                    draw_border=False,
+                    window_name=self.actual_title,
+                )
 
             owner = self  # prevent closure over 'self' name collision
 
@@ -407,7 +447,13 @@ class WindowCapture:
             # ---- Re-probe: if frames keep coming back black, try next ----
             if self._is_mostly_black(img):
                 self._consecutive_black += 1
-                if self._consecutive_black == 10:
+                # Retry periodically rather than only on the tenth frame: if
+                # the one attempt at switching also came back black, an
+                # equality test would never fire again and the capture stayed
+                # dead for the rest of the session.
+                if (self._consecutive_black >= self.BLACK_FRAMES_BEFORE_REPROBE
+                        and self._consecutive_black
+                        % self.BLACK_FRAMES_BEFORE_REPROBE == 0):
                     if self._backend == 'gdi':
                         # Try WGC
                         wgc_img = self._capture_via_wgc()
@@ -445,9 +491,12 @@ class WindowCapture:
             else:
                 self._consecutive_black = 0
 
-            # Apply crop if specified
+            # Apply crop if specified.  Validate against the frame we
+            # actually got: a WGC buffer is not always the same size as the
+            # window rectangle, so checking the crop against the rect could
+            # clamp a perfectly good region or let a bad one through.
             if self.crop_region:
-                img = self._apply_crop(img, width, height)
+                img = self._apply_crop(img, img.shape[1], img.shape[0])
 
             self._log_frame_change(img)
             return img
@@ -566,29 +615,8 @@ class WindowCapture:
         else:
             logger.info("Crop region cleared")
     
-    def pin_on_top(self, enable: bool = True):
-        """Set or remove the 'always on top' flag for the captured window.
-
-        Only needed when using the mss fallback path (Desktop Duplication),
-        which captures whatever is drawn at the screen coordinates.  When
-        GDI (PrintWindow) or WGC is used this is unnecessary.
-        """
-        try:
-            flag = win32con.HWND_TOPMOST if enable else win32con.HWND_NOTOPMOST
-            win32gui.SetWindowPos(
-                self.hwnd, flag, 0, 0, 0, 0,
-                win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE,
-            )
-            self._was_topmost = enable
-            logger.info(f"Window '{self.actual_title}' pinned on top: {enable}")
-        except Exception as e:
-            logger.warning(f"Failed to set window topmost flag: {e}")
-
     def close(self):
         """Close window capture session and release resources."""
-        # Remove TOPMOST so the window goes back to normal
-        if self._was_topmost:
-            self.pin_on_top(False)
         # Stop WGC session
         self._stop_wgc()
         if self._mss_instance is not None:

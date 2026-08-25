@@ -13,7 +13,12 @@ PyYAML>=6.0
 PySide6>=6.8,<6.11
 pywin32>=306; sys_platform == 'win32'
 
-# Optional — background capture of DirectX windows without pinning on top
+# Required on Windows for MSFS pop-outs.  Was listed as optional, which is
+# why capture used to need the window kept on top: MSFS renders with DirectX,
+# so GDI comes back black, and without this the only remaining backend is mss,
+# which reads screen pixels and captures whatever covers the window.
+# Measured: GDI and WGC both capture correctly while occluded; only WGC also
+# works while minimised; mss captures the covering window instead.
 windows-capture>=1.5.0; sys_platform == 'win32'
 
 # Optional — improves first-run OCR accuracy (template matching takes over after)

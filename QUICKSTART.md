@@ -38,8 +38,10 @@ The first run spends roughly 30 seconds learning glyph shapes ("Template
 warmup" in the log). After that, recognition runs from the learned templates
 and is fast. The learned glyphs are saved, so this happens once.
 
-Once running, the MCDU window may be minimised or behind other windows,
-provided capture landed on the GDI or WGC backend (the log says which).
+Once running, the MCDU window can sit behind other windows — it does not
+need to be pinned on top. Minimising it works only on the WGC backend. The
+log reports which backend was chosen; if it says mss, the window must stay
+visible and uncovered, which usually means `windows-capture` is missing.
 
 ## From source
 
