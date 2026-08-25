@@ -1,17 +1,22 @@
 """
-GUI application for MSFS A330 WinWing MCDU Scraper
-Provides window selection, log viewing, and control interface
+GUI application for MSFS A330 WinWing MCDU Scraper (PySide6).
+
+Provides window selection, screen-area selection, log viewing and control.
+
+Threading model: the capture pipeline is asyncio, so it runs in a worker
+thread with its own event loop.  Nothing in that thread touches a widget
+directly - log records reach the UI through a Qt signal, which Qt delivers
+on the main thread.
 """
 
-import tkinter as tk
-from tkinter import ttk, scrolledtext, messagebox
-import logging
+from __future__ import annotations
+
 import asyncio
-import threading
+import logging
 import sys
 import traceback
 from pathlib import Path
-import queue
+from typing import Optional
 
 # Add src to path (handle both normal and PyInstaller frozen execution)
 if getattr(sys, 'frozen', False):
@@ -20,359 +25,119 @@ if getattr(sys, 'frozen', False):
 else:
     sys.path.insert(0, str(Path(__file__).parent))
 
+from PySide6.QtCore import QObject, QThread, Qt, Signal
+from PySide6.QtGui import QTextCursor
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
 from config import Config
-from window_capture import WindowCapture, WINDOWS_AVAILABLE
 from mobiflight_client import MobiFlightClient
 from pipeline import MCDUPipeline, PipelineSettings
 from region_selector import RegionSelectorDialog
+from window_capture import WindowCapture, WINDOWS_AVAILABLE
+
+MSFS_KEYWORDS = ('microsoft flight simulator', 'msfs', 'flight simulator',
+                 'mcdu', 'airbus')
 
 
-class QueueHandler(logging.Handler):
-    """Custom logging handler that puts log messages into a queue"""
-    
-    def __init__(self, log_queue):
+class _LogEmitter(QObject):
+    """Signal carrier for SignalLogHandler.
+
+    Deliberately a plain QObject rather than a base of the handler:
+    multiply inheriting from logging.Handler and QObject does not reliably
+    register Signals in PySide6, and the failure is silent — records simply
+    never arrive.
+    """
+
+    record = Signal(str)
+
+
+class SignalLogHandler(logging.Handler):
+    """Forwards log records to the UI thread through a Qt signal.
+
+    Qt widgets may only be touched from the thread that created them, and
+    log records arrive from the pipeline's worker thread.  Emitting a queued
+    signal hands the record over safely.
+    """
+
+    def __init__(self) -> None:
         super().__init__()
-        self.log_queue = log_queue
-    
-    def emit(self, record):
+        self.emitter = _LogEmitter()
+
+    def emit(self, record: logging.LogRecord) -> None:
         try:
-            self.log_queue.put_nowait(self.format(record))
-        except queue.Full:
-            pass  # Drop rather than block the capture thread
+            self.emitter.record.emit(self.format(record))
+        except Exception:
+            # Report through logging's own channel rather than swallowing it;
+            # a silent except here hid this very class being broken.
+            self.handleError(record)
 
 
-class MCDUScraperGUI:
-    """GUI for MSFS MCDU Scraper with window selection and log viewing"""
-    
-    def __init__(self, root):
-        self.root = root
-        self.root.title("MSFS WinWing MCDU Scraper")
-        self.root.geometry("900x700")
-        
-        # State
-        self.running = False
-        self.capture = None
-        self.pipeline = None
-        self.clients = {}
-        self.scraper_thread = None
-        self.loop = None
-        
-        # Logging queue
-        self.log_queue = queue.Queue(maxsize=1000)
-        
-        # Setup logging
-        self.setup_logging()
-        
-        # Create UI
-        self.create_widgets()
-        
-        # Start log updater
-        self.update_logs()
-        
-        # Load config
-        try:
-            self.config = Config()
-            self.log("Configuration loaded successfully")
-        except Exception as e:
-            self.log(f"Warning: Could not load config: {e}", level="WARNING")
-            self.config = None
-    
-    def setup_logging(self):
-        """Setup logging to capture to GUI"""
-        # Create queue handler
-        queue_handler = QueueHandler(self.log_queue)
-        queue_handler.setFormatter(
-            logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        )
-        
-        # Add to root logger
-        root_logger = logging.getLogger()
-        root_logger.addHandler(queue_handler)
-        root_logger.setLevel(logging.INFO)
-    
-    def create_widgets(self):
-        """Create GUI widgets"""
-        # Main container
-        main_frame = ttk.Frame(self.root, padding="10")
-        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        # Configure grid weights
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
-        main_frame.columnconfigure(0, weight=1)
-        main_frame.rowconfigure(4, weight=1)
-        
-        # Title
-        title_label = ttk.Label(
-            main_frame, 
-            text="MSFS WinWing MCDU Scraper", 
-            font=('Arial', 16, 'bold')
-        )
-        title_label.grid(row=0, column=0, columnspan=2, pady=(0, 10))
-        
-        # Window Selection
-        self.window_frame = ttk.LabelFrame(main_frame, text="Window Selection", padding="10")
-        self.window_frame.grid(row=2, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
-        
-        ttk.Label(self.window_frame, text="Select MCDU Window:").grid(row=0, column=0, sticky=tk.W)
-        
-        self.window_combo = ttk.Combobox(self.window_frame, width=60, state='readonly')
-        self.window_combo.grid(row=0, column=1, padx=5, sticky=(tk.W, tk.E))
-        
-        ttk.Button(
-            self.window_frame, 
-            text="Refresh Windows", 
-            command=self.refresh_windows
-        ).grid(row=0, column=2, padx=5)
+class ScraperWorker(QObject):
+    """Runs the capture pipeline on its own thread and event loop."""
 
-        self.show_all_windows_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            self.window_frame,
-            text="Show all windows",
-            variable=self.show_all_windows_var,
-            command=self.refresh_windows
-        ).grid(row=0, column=3, padx=10)
-        
-        # Screen area selection button (NEW)
-        self.select_area_button = ttk.Button(
-            self.window_frame,
-            text="Select Screen Area",
-            command=self.select_screen_area,
-            state='normal'
-        )
-        self.select_area_button.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
-        
-        # Crop region info label (NEW)
-        self.crop_info_label = ttk.Label(self.window_frame, text="No crop region set", font=('Arial', 8))
-        self.crop_info_label.grid(row=1, column=2, padx=5, sticky=tk.W)
-        
-        self.window_frame.columnconfigure(1, weight=1)
-        
-        # Store crop region (NEW)
-        self.crop_region = None
-        
-        # Status and Control
-        control_frame = ttk.LabelFrame(main_frame, text="Control", padding="10")
-        control_frame.grid(row=3, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
-        
-        self.status_label = ttk.Label(control_frame, text="Status: Stopped", font=('Arial', 10, 'bold'))
-        self.status_label.grid(row=0, column=0, sticky=tk.W, padx=5)
-        
-        self.start_button = ttk.Button(
-            control_frame, 
-            text="Start Scraper", 
-            command=self.start_scraper,
-            width=15
-        )
-        self.start_button.grid(row=0, column=1, padx=5)
-        
-        self.stop_button = ttk.Button(
-            control_frame, 
-            text="Stop Scraper", 
-            command=self.stop_scraper,
-            state='disabled',
-            width=15
-        )
-        self.stop_button.grid(row=0, column=2, padx=5)
+    finished = Signal()
+    failed = Signal(str)
+    connected = Signal()
 
-        self.delete_templates_button = ttk.Button(
-            control_frame,
-            text="Delete Templates",
-            command=self.delete_templates,
-            width=18
-        )
-        self.delete_templates_button.grid(row=0, column=3, padx=5)
-        
-        # Logs
-        log_frame = ttk.LabelFrame(main_frame, text="Logs", padding="10")
-        log_frame.grid(row=4, column=0, columnspan=2, sticky=(tk.W, tk.E, tk.N, tk.S), pady=5)
-        log_frame.columnconfigure(0, weight=1)
-        log_frame.rowconfigure(0, weight=1)
-        
-        self.log_text = scrolledtext.ScrolledText(log_frame, height=20, width=100)
-        self.log_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        # Clear logs button
-        ttk.Button(log_frame, text="Clear Logs", command=self.clear_logs).grid(row=1, column=0, pady=5)
-        
-        # Refresh windows on startup
-        if WINDOWS_AVAILABLE:
-            self.refresh_windows()
-        else:
-            self.log("Window capture not available (Windows only or pywin32 not installed)", level="WARNING")
-            self.window_combo.config(state='disabled')
-    
-    def refresh_windows(self):
-        """Refresh list of available windows"""
-        if not WINDOWS_AVAILABLE:
-            self.log("Window capture not available on this platform", level="WARNING")
-            return
-        
+    def __init__(self, config: Config, capture) -> None:
+        super().__init__()
+        self.config = config
+        self.capture = capture
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._pipeline: Optional[MCDUPipeline] = None
+        self._stopping = False
+
+    def start(self) -> None:
+        """Entry point for the worker thread."""
         try:
-            windows = WindowCapture.list_windows()
-            
-            if self.show_all_windows_var.get():
-                filtered_windows = windows
-            else:
-                # Filter for likely MCDU windows
-                msfs_keywords = ['microsoft flight simulator', 'msfs', 'flight simulator', 'mcdu', 'airbus']
-                filtered_windows = [
-                    (hwnd, title) for hwnd, title in windows
-                    if any(keyword in title.lower() for keyword in msfs_keywords) or len(title) < 50
-                ]
-            
-                if not filtered_windows:
-                    filtered_windows = windows[:20]  # Show first 20 if no matches
-            
-            self.window_list = filtered_windows
-            window_titles = [f"{title} (HWND: {hwnd})" for hwnd, title in filtered_windows]
-            
-            self.window_combo['values'] = window_titles
-            if window_titles:
-                self.window_combo.current(0)
-            
-            self.log(f"Found {len(windows)} windows, showing {len(filtered_windows)}")
-        except Exception as e:
-            self.log(f"Error refreshing windows: {e}", level="ERROR")
-    
-    def select_screen_area(self):
-        """Open dialog to visually select screen area from window"""
-        if not WINDOWS_AVAILABLE:
-            messagebox.showerror("Error", "Window capture not available on this platform")
-            return
-        
-        # Get selected window
-        selection = self.window_combo.current()
-        if selection < 0:
-            messagebox.showerror("Error", "Please select a window first")
-            return
-        
-        try:
-            hwnd, title = self.window_list[selection]
-            self.log(f"Capturing preview from: {title}")
-            
-            # Capture window for preview
-            temp_capture = WindowCapture(window_handle=hwnd)
-            preview_image = temp_capture.capture()
-            temp_capture.close()
-            
-            # Open region selector dialog
-            dialog = RegionSelectorDialog(self.root, preview_image, self.crop_region)
-            result = dialog.show()
-            
-            if result:
-                self.crop_region = result
-                x, y, w, h = result
-                self.crop_info_label.config(
-                    text=f"Crop: X={x}, Y={y}, W={w}, H={h}",
-                    foreground='green'
-                )
-                self.log(f"Screen area selected: X={x}, Y={y}, Width={w}, Height={h}")
-            else:
-                self.log("Screen area selection cancelled")
-                
-        except Exception as e:
-            self.log(f"Error selecting screen area: {e}", level="ERROR")
-            messagebox.showerror("Error", f"Failed to capture window: {e}")
-    
-    def start_scraper(self):
-        """Start the MCDU scraper"""
-        if self.running:
-            return
-        
-        try:
-            # Validate configuration
-            if not self.config:
-                messagebox.showerror("Error", "Configuration not loaded. Please check config.yaml")
-                return
-            
-            if not WINDOWS_AVAILABLE:
-                messagebox.showerror("Error", "Window capture not available. Please install pywin32.")
-                return
-            
-            # Get selected window
-            selection = self.window_combo.current()
-            if selection < 0:
-                messagebox.showerror("Error", "Please select a window to capture")
-                return
-            
-            hwnd, title = self.window_list[selection]
-            self.log(f"Starting scraper with window: {title}")
-            
-            # Create window capture with optional crop region
-            self.capture = WindowCapture(window_handle=hwnd, crop_region=self.crop_region)
-            
-            if self.crop_region:
-                x, y, w, h = self.crop_region
-                self.log(f"Using crop region: X={x}, Y={y}, Width={w}, Height={h}")
-            
-            # Update UI
-            self.running = True
-            self.start_button.config(state='disabled')
-            self.stop_button.config(state='normal')
-            self.status_label.config(text="Status: Running", foreground='green')
-            
-            # Start scraper in background thread
-            self.scraper_thread = threading.Thread(target=self.run_scraper, daemon=True)
-            self.scraper_thread.start()
-            
-        except Exception as e:
-            self.log(f"Error starting scraper: {e}", level="ERROR")
-            messagebox.showerror("Error", f"Failed to start scraper: {e}")
-            self.running = False
-    
-    def stop_scraper(self):
-        """Stop the MCDU scraper"""
-        if not self.running:
-            return
-        
-        self.log("Stopping scraper...")
-        self.running = False
-        
-        # Update UI
-        self.start_button.config(state='normal')
-        self.stop_button.config(state='disabled')
-        self.status_label.config(text="Status: Stopped", foreground='red')
-    
-    def run_scraper(self):
-        """Run the scraper loop in background thread"""
-        try:
-            # Create new event loop for this thread
-            self.loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.loop)
-            
-            # Run async scraper
-            self.loop.run_until_complete(self.async_scraper())
-        except Exception as e:
-            self.log(f"Scraper error: {e}", level="ERROR")
-        finally:
-            if self.loop:
-                self.loop.close()
-    
-    async def async_scraper(self):
-        """Drive the shared capture pipeline until the user stops it."""
-        client = None
-        client_task = None
-        try:
-            # Initialize MobiFlight client
-            client = MobiFlightClient(
-                websocket_uri=self.config.get_captain_url(),
-                font=self.config.get_font(),
-                max_retries=self.config.get_max_retries()
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._loop.run_until_complete(self._run())
+        except Exception as exc:
+            logging.getLogger(__name__).error(
+                "Scraper thread failed: %s\n%s", exc, traceback.format_exc(),
             )
+            self.failed.emit(str(exc))
+        finally:
+            if self._loop is not None:
+                self._loop.close()
+                self._loop = None
+            self.finished.emit()
 
-            # Start client connection
-            client_task = asyncio.create_task(client.run())
+    def stop(self) -> None:
+        """Ask the pipeline to stop.  Safe to call from the UI thread."""
+        self._stopping = True
+        pipeline, loop = self._pipeline, self._loop
+        if pipeline is not None and loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(pipeline.stop)
 
-            # Wait for connection
+    async def _run(self) -> None:
+        client = MobiFlightClient(
+            websocket_uri=self.config.get_captain_url(),
+            font=self.config.get_font(),
+            max_retries=self.config.get_max_retries(),
+        )
+        client_task = asyncio.create_task(client.run())
+
+        try:
             await client.connected.wait()
-            self.log("Connected to WinWing CDU")
+            self.connected.emit()
 
-            # The capture/parse/stabilise/send loop lives in pipeline.py so
-            # the GUI and the CLI cannot drift apart.  Its progress reaches
-            # the log pane through the root logging handler installed in
-            # setup_logging().
-            self.pipeline = MCDUPipeline(
+            self._pipeline = MCDUPipeline(
                 name="gui",
                 capture=self.capture,
                 client=client,
@@ -383,114 +148,394 @@ class MCDUScraperGUI:
                     enable_caching=self.config.get_enable_caching(),
                 ),
             )
-
-            pipeline_task = asyncio.create_task(self.pipeline.run())
-
-            # Poll the UI flag so Stop takes effect promptly.
-            while self.running and not pipeline_task.done():
-                await asyncio.sleep(0.1)
-
-            self.pipeline.stop()
-            await pipeline_task
-
-            self.log("Scraper stopped")
-
-        except Exception as e:
-            self.log(f"Async scraper error: {e}", level="ERROR")
-            self.log(f"[DEBUG] {traceback.format_exc()}", level="ERROR")
+            # stop() may have been called while we were still connecting.
+            if self._stopping:
+                return
+            await self._pipeline.run()
         finally:
-            if client_task is not None:
-                client_task.cancel()
-                try:
-                    await client_task
-                except asyncio.CancelledError:
-                    pass
-            if client is not None:
-                await client.close()
+            client_task.cancel()
+            try:
+                await client_task
+            except asyncio.CancelledError:
+                pass
+            await client.close()
 
-    def log(self, message: str, level: str = "INFO"):
-        """Add log message"""
-        timestamp = logging.Formatter().formatTime(logging.LogRecord(
-            name="GUI", level=0, pathname="", lineno=0,
-            msg="", args=(), exc_info=None
-        ))
-        log_msg = f"{timestamp} - {level} - {message}"
-        self.log_queue.put(log_msg)
-    
-    def update_logs(self):
-        """Update log display from queue"""
+
+class MCDUScraperWindow(QMainWindow):
+    """Main window: window picker, controls and log pane."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("MSFS WinWing MCDU Scraper")
+        self.resize(960, 720)
+
+        self.running = False
+        self.capture = None
+        self.crop_region: Optional[tuple] = None
+        self.window_list: list = []
+        self.worker: Optional[ScraperWorker] = None
+        self.thread: Optional[QThread] = None
+
+        self._build_ui()
+        self._setup_logging()
+
         try:
-            while True:
-                message = self.log_queue.get_nowait()
-                self.log_text.insert(tk.END, message + '\n')
-                self.log_text.see(tk.END)
-        except queue.Empty:
-            pass
-        
-        # Schedule next update
-        self.root.after(100, self.update_logs)
-    
-    def clear_logs(self):
-        """Clear log display"""
-        self.log_text.delete(1.0, tk.END)
+            self.config = Config()
+            self.log("Configuration loaded successfully")
+        except Exception as exc:
+            self.log(f"Warning: Could not load config: {exc}", "WARNING")
+            self.config = None
 
-    def delete_templates(self):
+        if WINDOWS_AVAILABLE:
+            self.refresh_windows()
+        else:
+            self.log("Window capture not available "
+                     "(Windows only, or pywin32 not installed)", "WARNING")
+            self.window_combo.setEnabled(False)
+
+    # ------------------------------------------------------------------
+    #  UI construction
+    # ------------------------------------------------------------------
+    def _build_ui(self) -> None:
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+
+        title = QLabel("MSFS WinWing MCDU Scraper")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("font-size: 18px; font-weight: bold;")
+        layout.addWidget(title)
+
+        layout.addWidget(self._build_window_group())
+        layout.addWidget(self._build_control_group())
+        layout.addWidget(self._build_log_group(), stretch=1)
+
+    def _build_window_group(self) -> QGroupBox:
+        group = QGroupBox("Window Selection")
+        grid = QGridLayout(group)
+
+        grid.addWidget(QLabel("Select MCDU Window:"), 0, 0)
+
+        self.window_combo = QComboBox()
+        self.window_combo.setMinimumWidth(420)
+        grid.addWidget(self.window_combo, 0, 1)
+
+        refresh = QPushButton("Refresh Windows")
+        refresh.clicked.connect(self.refresh_windows)
+        grid.addWidget(refresh, 0, 2)
+
+        self.show_all_checkbox = QCheckBox("Show all windows")
+        self.show_all_checkbox.toggled.connect(self.refresh_windows)
+        grid.addWidget(self.show_all_checkbox, 0, 3)
+
+        self.select_area_button = QPushButton("Select Screen Area")
+        self.select_area_button.clicked.connect(self.select_screen_area)
+        grid.addWidget(self.select_area_button, 1, 1)
+
+        self.crop_info_label = QLabel("No crop region set")
+        grid.addWidget(self.crop_info_label, 1, 2, 1, 2)
+
+        grid.setColumnStretch(1, 1)
+        return group
+
+    def _build_control_group(self) -> QGroupBox:
+        group = QGroupBox("Control")
+        row = QHBoxLayout(group)
+
+        self.status_label = QLabel("Status: Stopped")
+        self.status_label.setStyleSheet("font-weight: bold;")
+        row.addWidget(self.status_label)
+        row.addStretch()
+
+        self.start_button = QPushButton("Start Scraper")
+        self.start_button.clicked.connect(self.start_scraper)
+        row.addWidget(self.start_button)
+
+        self.stop_button = QPushButton("Stop Scraper")
+        self.stop_button.clicked.connect(self.stop_scraper)
+        self.stop_button.setEnabled(False)
+        row.addWidget(self.stop_button)
+
+        self.delete_templates_button = QPushButton("Delete Templates")
+        self.delete_templates_button.clicked.connect(self.delete_templates)
+        row.addWidget(self.delete_templates_button)
+
+        return group
+
+    def _build_log_group(self) -> QGroupBox:
+        group = QGroupBox("Logs")
+        layout = QVBoxLayout(group)
+
+        self.log_view = QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        # Bounded history: at 30 FPS an unbounded pane grows without limit.
+        self.log_view.setMaximumBlockCount(5000)
+        self.log_view.setStyleSheet("font-family: Consolas, monospace;")
+        layout.addWidget(self.log_view)
+
+        clear = QPushButton("Clear Logs")
+        clear.clicked.connect(self.log_view.clear)
+        layout.addWidget(clear)
+
+        return group
+
+    def _setup_logging(self) -> None:
+        handler = SignalLogHandler()
+        handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        ))
+        handler.emitter.record.connect(self._append_log)
+
+        root = logging.getLogger()
+        root.addHandler(handler)
+        root.setLevel(logging.INFO)
+        self._log_handler = handler
+
+    # ------------------------------------------------------------------
+    #  Logging
+    # ------------------------------------------------------------------
+    def _append_log(self, message: str) -> None:
+        self.log_view.appendPlainText(message)
+        self.log_view.moveCursor(QTextCursor.End)
+
+    def log(self, message: str, level: str = "INFO") -> None:
+        """Log through the standard logging machinery."""
+        logging.getLogger("gui").log(
+            getattr(logging, level, logging.INFO), message,
+        )
+
+    # ------------------------------------------------------------------
+    #  Window selection
+    # ------------------------------------------------------------------
+    def refresh_windows(self) -> None:
+        if not WINDOWS_AVAILABLE:
+            self.log("Window capture not available on this platform", "WARNING")
+            return
+
+        try:
+            windows = WindowCapture.list_windows()
+
+            if self.show_all_checkbox.isChecked():
+                filtered = windows
+            else:
+                filtered = [
+                    (hwnd, title) for hwnd, title in windows
+                    if any(k in title.lower() for k in MSFS_KEYWORDS)
+                    or len(title) < 50
+                ]
+                if not filtered:
+                    filtered = windows[:20]
+
+            self.window_list = filtered
+            self.window_combo.clear()
+            self.window_combo.addItems(
+                [f"{title} (HWND: {hwnd})" for hwnd, title in filtered]
+            )
+            self.log(f"Found {len(windows)} windows, showing {len(filtered)}")
+        except Exception as exc:
+            self.log(f"Error refreshing windows: {exc}", "ERROR")
+
+    def _selected_window(self) -> Optional[tuple]:
+        index = self.window_combo.currentIndex()
+        if index < 0 or index >= len(self.window_list):
+            return None
+        return self.window_list[index]
+
+    def select_screen_area(self) -> None:
+        if not WINDOWS_AVAILABLE:
+            QMessageBox.critical(self, "Error",
+                                 "Window capture not available on this platform")
+            return
+
+        selected = self._selected_window()
+        if selected is None:
+            QMessageBox.critical(self, "Error", "Please select a window first")
+            return
+
+        hwnd, title = selected
+        try:
+            self.log(f"Capturing preview from: {title}")
+            temp_capture = WindowCapture(window_handle=hwnd)
+            try:
+                preview = temp_capture.capture()
+            finally:
+                temp_capture.close()
+
+            dialog = RegionSelectorDialog(self, preview, self.crop_region)
+            result = dialog.show()
+
+            if result:
+                self.crop_region = result
+                x, y, w, h = result
+                self.crop_info_label.setText(f"Crop: X={x}, Y={y}, W={w}, H={h}")
+                self.crop_info_label.setStyleSheet("color: green;")
+                self.log(f"Screen area selected: X={x}, Y={y}, W={w}, H={h}")
+            else:
+                self.log("Screen area selection cancelled")
+
+        except Exception as exc:
+            self.log(f"Error selecting screen area: {exc}", "ERROR")
+            QMessageBox.critical(self, "Error", f"Failed to capture window: {exc}")
+
+    # ------------------------------------------------------------------
+    #  Start / stop
+    # ------------------------------------------------------------------
+    def start_scraper(self) -> None:
+        if self.running:
+            return
+
+        if not self.config:
+            QMessageBox.critical(self, "Error",
+                                 "Configuration not loaded. Please check config.yaml")
+            return
+        if not WINDOWS_AVAILABLE:
+            QMessageBox.critical(self, "Error",
+                                 "Window capture not available. Please install pywin32.")
+            return
+
+        selected = self._selected_window()
+        if selected is None:
+            QMessageBox.critical(self, "Error", "Please select a window to capture")
+            return
+
+        hwnd, title = selected
+        try:
+            self.log(f"Starting scraper with window: {title}")
+            self.capture = WindowCapture(window_handle=hwnd,
+                                         crop_region=self.crop_region)
+            if self.crop_region:
+                x, y, w, h = self.crop_region
+                self.log(f"Using crop region: X={x}, Y={y}, W={w}, H={h}")
+            else:
+                self.log(
+                    "No crop region set - the whole window will be carved "
+                    "into the 24x14 grid. Use 'Select Screen Area' if the "
+                    "output looks wrong.", "WARNING",
+                )
+        except Exception as exc:
+            self.log(f"Error starting scraper: {exc}", "ERROR")
+            QMessageBox.critical(self, "Error", f"Failed to start scraper: {exc}")
+            return
+
+        self.worker = ScraperWorker(self.config, self.capture)
+        self.thread = QThread()
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.start)
+        self.worker.connected.connect(
+            lambda: self.log("Connected to WinWing CDU")
+        )
+        self.worker.failed.connect(self._on_worker_failed)
+        self.worker.finished.connect(self._on_worker_finished)
+        self.thread.start()
+
+        self.running = True
+        self.start_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
+        self.status_label.setText("Status: Running")
+        self.status_label.setStyleSheet("font-weight: bold; color: green;")
+
+    def stop_scraper(self) -> None:
+        if not self.running:
+            return
+        self.log("Stopping scraper...")
+        self.stop_button.setEnabled(False)
+        if self.worker:
+            self.worker.stop()
+
+    def _on_worker_failed(self, message: str) -> None:
+        self.log(f"Scraper error: {message}", "ERROR")
+
+    def _on_worker_finished(self) -> None:
+        if self.thread:
+            self.thread.quit()
+            self.thread.wait(5000)
+            self.thread = None
+        self.worker = None
+
+        if self.capture:
+            try:
+                self.capture.close()
+            except Exception as exc:
+                self.log(f"Error closing capture: {exc}", "WARNING")
+            self.capture = None
+
+        self.running = False
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        self.status_label.setText("Status: Stopped")
+        self.status_label.setStyleSheet("font-weight: bold; color: red;")
+        self.log("Scraper stopped")
+
+    # ------------------------------------------------------------------
+    #  Templates
+    # ------------------------------------------------------------------
+    def delete_templates(self) -> None:
         """Delete learned OCR templates so they are rebuilt on next start."""
         if self.running:
-            messagebox.showwarning(
-                "Scraper Running",
+            QMessageBox.warning(
+                self, "Scraper Running",
                 "Please stop the scraper before deleting templates.",
             )
             return
 
-        template_path = Path(__file__).resolve().parent.parent / "templates" / "mcdu_templates.npz"
+        from mcdu_parser import (
+            TemplateMatcher, _get_template_matcher,
+            _prev_row_imgs, _prev_row_ocr,
+        )
+
+        template_path = TemplateMatcher.DEFAULT_TEMPLATE_PATH
         if template_path.exists():
             try:
                 template_path.unlink()
                 self.log("Templates deleted.")
-            except Exception as e:
-                self.log(f"Error deleting templates: {e}", level="ERROR")
-                messagebox.showerror("Error", f"Failed to delete templates: {e}")
+            except Exception as exc:
+                self.log(f"Error deleting templates: {exc}", "ERROR")
+                QMessageBox.critical(self, "Error",
+                                     f"Failed to delete templates: {exc}")
                 return
         else:
             self.log("No template file on disk.")
 
-        # Reset the in-memory singleton + row caches so the NEXT start
+        # Reset the in-memory singleton and row caches so the next start
         # triggers a full warmup with fresh learning.
         try:
-            from mcdu_parser import (
-                _get_template_matcher,
-                _prev_row_imgs, _prev_row_ocr,
-            )
-            matcher = _get_template_matcher()
-            matcher.reset()
+            _get_template_matcher().reset()
             _prev_row_imgs.clear()
             _prev_row_ocr.clear()
             self.log(
                 "In-memory templates and row caches cleared. "
                 "Start the scraper to trigger a fresh warmup."
             )
-        except Exception as e:
-            self.log(f"Error resetting in-memory state: {e}", level="ERROR")
+        except Exception as exc:
+            self.log(f"Error resetting in-memory state: {exc}", "ERROR")
+
+    # ------------------------------------------------------------------
+    #  Shutdown
+    # ------------------------------------------------------------------
+    def closeEvent(self, event) -> None:          # noqa: N802 (Qt naming)
+        if self.running:
+            answer = QMessageBox.question(
+                self, "Quit", "Scraper is running. Do you want to quit?",
+                QMessageBox.Ok | QMessageBox.Cancel,
+            )
+            if answer != QMessageBox.Ok:
+                event.ignore()
+                return
+            self.stop_scraper()
+            if self.thread:
+                self.thread.wait(5000)
+
+        logging.getLogger().removeHandler(self._log_handler)
+        event.accept()
 
 
-def main():
-    """Main entry point for GUI"""
-    root = tk.Tk()
-    app = MCDUScraperGUI(root)
-    
-    # Handle window close
-    def on_closing():
-        if app.running:
-            if messagebox.askokcancel("Quit", "Scraper is running. Do you want to quit?"):
-                app.stop_scraper()
-                root.destroy()
-        else:
-            root.destroy()
-    
-    root.protocol("WM_DELETE_WINDOW", on_closing)
-    root.mainloop()
+def main() -> int:
+    """Main entry point for the GUI."""
+    app = QApplication(sys.argv)
+    window = MCDUScraperWindow()
+    window.show()
+    return app.exec()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

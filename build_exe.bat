@@ -27,8 +27,6 @@ venv\Scripts\pyinstaller --name "MSFS-MCDU-Scraper-GUI" ^
     --icon=NONE ^
     --paths src ^
     --add-data "config.yaml.example;." ^
-    --hidden-import=PIL ^
-    --hidden-import=PIL._tkinter_finder ^
     --hidden-import=numpy ^
     --hidden-import=cv2 ^
     --hidden-import=yaml ^
@@ -36,6 +34,10 @@ venv\Scripts\pyinstaller --name "MSFS-MCDU-Scraper-GUI" ^
     --hidden-import=win32ui ^
     --hidden-import=win32con ^
     --hidden-import=win32api ^
+    --hidden-import=windows_capture ^
+    --exclude-module=tkinter ^
+    --exclude-module=PyQt5 ^
+    --exclude-module=PyQt6 ^
     src/gui.py
 
 if errorlevel 1 (
@@ -53,10 +55,13 @@ venv\Scripts\pyinstaller --name "MSFS-MCDU-Scraper-CLI" ^
     --icon=NONE ^
     --paths src ^
     --add-data "config.yaml.example;." ^
-    --hidden-import=PIL ^
     --hidden-import=numpy ^
     --hidden-import=cv2 ^
     --hidden-import=yaml ^
+    --hidden-import=windows_capture ^
+    --exclude-module=tkinter ^
+    --exclude-module=PySide6 ^
+    --exclude-module=shiboken6 ^
     src/main.py
     
 if errorlevel 1 (

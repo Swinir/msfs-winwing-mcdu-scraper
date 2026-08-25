@@ -38,8 +38,6 @@ jobs:
           --icon=NONE `
           --paths src `
           --add-data "config.yaml.example;." `
-          --hidden-import=PIL `
-          --hidden-import=PIL._tkinter_finder `
           --hidden-import=numpy `
           --hidden-import=cv2 `
           --hidden-import=yaml `
@@ -48,6 +46,9 @@ jobs:
           --hidden-import=win32con `
           --hidden-import=win32api `
           --hidden-import=windows_capture `
+          --exclude-module=tkinter `
+          --exclude-module=PyQt5 `
+          --exclude-module=PyQt6 `
           src/gui.py
     
     - name: Build CLI Executable
@@ -58,11 +59,13 @@ jobs:
           --icon=NONE `
           --paths src `
           --add-data "config.yaml.example;." `
-          --hidden-import=PIL `
           --hidden-import=numpy `
           --hidden-import=cv2 `
           --hidden-import=yaml `
           --hidden-import=windows_capture `
+          --exclude-module=tkinter `
+          --exclude-module=PySide6 `
+          --exclude-module=shiboken6 `
           src/main.py
     
     - name: Package Release
@@ -79,11 +82,6 @@ jobs:
         Copy-Item QUICKSTART.md release/
         Copy-Item LICENSE release/
         Copy-Item config.yaml.example release/
-        if (Test-Path docs) {
-          Copy-Item -Recurse docs release/
-        } else {
-          Write-Host "No docs directory found — skipping copying docs."
-        }
         # Create README for release
         @"
         # MSFS WinWing MCDU Scraper - Executable Release
@@ -99,7 +97,8 @@ jobs:
         
         ### CLI Version
         1. Copy config.yaml.example to config.yaml
-        2. Edit config.yaml with your screen coordinates
+        2. Set window_title and the crop region (the GUI's
+           "Select Screen Area" button reports the values)
         3. Run **MSFS-MCDU-Scraper-CLI.exe**
         
         ## Requirements
@@ -110,8 +109,7 @@ jobs:
         
         ## Documentation
         - See README.md for full documentation
-        - See docs/GUI_GUIDE.md for GUI usage
-        - See docs/CALIBRATION.md for screen setup
+        - See QUICKSTART.md for step-by-step setup
         
         ## Troubleshooting
         - For connection errors, ensure MobiFlight is running on port 8320

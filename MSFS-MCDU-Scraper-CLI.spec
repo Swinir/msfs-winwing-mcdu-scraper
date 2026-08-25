@@ -10,7 +10,8 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # The CLI has no GUI; keep Qt and tkinter out of the bundle.
+    excludes=['tkinter', 'PySide6', 'shiboken6', 'PyQt5', 'PyQt6'],
     noarchive=False,
     optimize=0,
 )

@@ -174,9 +174,32 @@ temp directory, and gitignore the artefact.
 
 ---
 
+## #11 — Region-selector tests assert nothing about the real code
+
+**Type:** bug · **Severity:** medium · **Status:** FIXED
+
+`tests/test_region_selector.py` imports nothing from `src/`.  Every case
+recomputes the arithmetic inline and then asserts the recomputation:
+
+```python
+scale_x = original_size[0] / scaled_size[0]
+x1_orig = int(scaled_selection[0] * scale_x)
+self.assertEqual(x1_orig, 50)
+```
+
+That asserts `int(50 * 1.0) == 50`.  Twelve of the suite's cases pass whether
+or not `RegionSelectorDialog` is correct — the coordinate transform it claims
+to cover could be inverted and the tests would stay green.
+
+**Fix:** extract the selection geometry into a GUI-free module and point the
+tests at it.  Doing this alongside #9 also means the maths does not have to be
+rewritten for Qt.
+
+---
+
 ## #9 — Migrate the GUI from Tkinter to PySide6
 
-**Type:** feature · **Severity:** n/a · **Status:** open
+**Type:** feature · **Severity:** n/a · **Status:** FIXED
 
 Replace the Tkinter front end with Qt (PySide6, LGPL — compatible with the MIT
 licence and with shipping a PyInstaller `.exe`).
