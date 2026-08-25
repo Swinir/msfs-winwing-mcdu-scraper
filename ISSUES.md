@@ -82,7 +82,7 @@ allows.
 
 ## #5 — Disambiguation heuristic overrides the templates it taught
 
-**Type:** design · **Severity:** medium · **Status:** open
+**Type:** design · **Severity:** medium · **Status:** FIXED
 
 `_disambiguate_confusables()` runs at learn time *and* again on every emitted
 character in phase 5 of `parse_grid()`.  A correctly learned `O` template is

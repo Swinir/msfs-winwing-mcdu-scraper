@@ -404,3 +404,92 @@ class TestRowCacheScoping(unittest.TestCase):
             set(cached_before), set(self.mod._prev_row_ocr),
             "second identical frame changed the cache key set",
         )
+
+
+class TestTemplateAuthority(unittest.TestCase):
+    """A confirmed template match must outrank the geometry heuristic.
+
+    `_disambiguate_confusables` used to run on every emitted character,
+    including ones the template matcher had already identified.  That capped
+    recognition accuracy at the accuracy of the heuristic: a glyph the
+    heuristic read wrong could never be corrected by learning, because the
+    correction was re-applied on every frame.
+    """
+
+    # A solid block: the D/O branch of the heuristic reads this as 'D',
+    # because its left edge is continuous and completely filled.
+    @staticmethod
+    def _block_cell():
+        glyph = np.zeros((20, 20), dtype=np.uint8)
+        glyph[5:15, 5:15] = 255
+        return glyph
+
+    def setUp(self):
+        import mcdu_parser
+        self.mod = mcdu_parser
+
+        self._saved_imgs = dict(mcdu_parser._prev_row_imgs)
+        self._saved_ocr = dict(mcdu_parser._prev_row_ocr)
+        mcdu_parser._prev_row_imgs.clear()
+        mcdu_parser._prev_row_ocr.clear()
+
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._saved_matcher = mcdu_parser._template_matcher
+        self.matcher = TemplateMatcher(
+            template_path=Path(self._tmpdir.name) / "t.npz"
+        )
+        mcdu_parser._template_matcher = self.matcher
+
+        self.image = np.zeros((280, 480, 3), dtype=np.uint8)
+        for col in range(10):
+            x = col * 20
+            self.image[65:75, x + 5:x + 15, :] = 220
+
+    def tearDown(self):
+        self.mod._prev_row_imgs.clear()
+        self.mod._prev_row_ocr.clear()
+        self.mod._prev_row_imgs.update(self._saved_imgs)
+        self.mod._prev_row_ocr.update(self._saved_ocr)
+        self.mod._template_matcher = self._saved_matcher
+        self._tmpdir.cleanup()
+
+    def test_heuristic_still_disagrees_with_the_label(self):
+        """Guard: the premise of the test below actually holds."""
+        from mcdu_parser import _disambiguate_confusables
+        self.assertEqual(
+            _disambiguate_confusables(self._block_cell(), "O"), "D",
+            "premise broken — the heuristic no longer rewrites this glyph",
+        )
+
+    def test_template_label_survives_parse_grid(self):
+        """The committed label wins over what the heuristic would decide."""
+        # Commit directly so the label is not itself disambiguated on the
+        # way in — this is exactly the case where the two disagree.
+        glyph = self.matcher._extract_glyph(self._block_cell())
+        self.matcher._commit_template("O", self.matcher._normalize(glyph))
+
+        result = MCDUParser(self.image, source_id="t").parse_grid()
+        emitted = {cell[0] for cell in result if cell}
+
+        self.assertIn("O", emitted, "template label was discarded")
+        self.assertNotIn(
+            "D", emitted,
+            "geometry heuristic overrode a confirmed template match",
+        )
+
+    def test_recognize_is_consistent_across_hash_and_ncc_paths(self):
+        """The fast hash path and the NCC path must agree on the label."""
+        cell = self._block_cell()
+        glyph = self.matcher._extract_glyph(cell)
+        self.matcher._commit_template("O", self.matcher._normalize(glyph))
+
+        via_hash = self.matcher.recognize(cell)
+        self.matcher._hash_cache.clear()   # force the NCC path
+        via_ncc = self.matcher.recognize(cell)
+
+        self.assertIsNotNone(via_hash)
+        self.assertIsNotNone(via_ncc)
+        self.assertEqual(
+            via_hash[0], via_ncc[0],
+            "hash-cache and NCC paths returned different characters",
+        )

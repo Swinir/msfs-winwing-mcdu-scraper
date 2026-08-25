@@ -299,8 +299,11 @@ class TemplateMatcher:
                     best_char = char
 
         if best_score >= self.MATCH_THRESHOLD and best_char is not None:
-            # Correct confusable pairs (D/O, A/B, ]/1) before caching
-            best_char = _disambiguate_confusables(cell_binary, best_char)
+            # Templates are disambiguated once, at learn() time, so the
+            # label attached to a matched template is already correct.
+            # Re-running the geometry heuristic here would let it overrule
+            # what was learned — and it would be inconsistent with the
+            # hash-cache path above, which returns the stored label as-is.
             self._hash_cache[key] = best_char
             return (best_char, best_score)
 
@@ -1209,10 +1212,14 @@ class MCDUParser:
                 if not char:
                     char = " "
 
-                # Final structural correction for confusable pairs.
-                # Even if the template matcher returned a char, verify
-                # it against glyph geometry (D/O, A/B, ]/1).
-                if char.strip():
+                # Structural correction for confusable pairs, applied to
+                # OCR and contour output only.  A confirmed template match
+                # is trusted: its label was already disambiguated when the
+                # template was learned, and re-deciding it here on every
+                # frame would cap recognition accuracy at the accuracy of
+                # the heuristic — learning could never correct a glyph the
+                # heuristic reads wrong.
+                if char.strip() and (row, col) not in template_results:
                     cell_bin_check = self._preprocess_cell(cell_img)
                     char = _disambiguate_confusables(cell_bin_check, char)
 
