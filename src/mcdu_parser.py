@@ -249,14 +249,27 @@ class TemplateMatcher:
     MAX_TEMPLATES = 5          # max variants stored per character
     CONSENSUS_MIN = 2          # min votes to promote a candidate template
 
-    def __init__(self) -> None:
+    #: Where learned glyphs are persisted when no explicit path is given.
+    DEFAULT_TEMPLATE_PATH = (
+        Path(__file__).resolve().parent.parent / "templates" / "mcdu_templates.npz"
+    )
+
+    def __init__(self, template_path: Optional[Path] = None) -> None:
+        """
+        Args:
+            template_path: Where to load/save learned glyphs.  Defaults to
+                ``DEFAULT_TEMPLATE_PATH``.  Tests must pass a temp path —
+                otherwise they inherit whatever the user learned by running
+                the app, and their results depend on the host machine.
+        """
         self._hash_cache: Dict[bytes, str] = {}
         self._templates: Dict[str, List[np.ndarray]] = {}
         self._candidates: Dict[bytes, Dict[str, int]] = {}
         self._dirty = False
         self._warmup_complete = False
-        self._template_path = (
-            Path(__file__).resolve().parent.parent / "templates" / "mcdu_templates.npz"
+        self._template_path = Path(
+            template_path if template_path is not None
+            else self.DEFAULT_TEMPLATE_PATH
         )
         self._load()
 

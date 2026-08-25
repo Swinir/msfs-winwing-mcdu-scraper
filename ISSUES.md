@@ -144,6 +144,36 @@ than absent ones.
 
 ---
 
+## #10 — Test suite reads the user's real template file
+
+**Type:** bug · **Severity:** medium · **Status:** FIXED
+
+`TemplateMatcher.__init__` hard-codes its path to
+`templates/mcdu_templates.npz` and loads it eagerly.  Every test that
+constructs a bare `TemplateMatcher()` therefore inherits whatever glyphs the
+user has learned by actually running the app.
+
+With a populated template file present, four existing tests fail:
+
+```
+FAILED tests/test_parser.py::TestTemplateMatcher::test_duplicate_not_stored
+FAILED tests/test_parser.py::TestTemplateMatcher::test_low_confidence_not_learned
+FAILED tests/test_parser.py::TestTemplateMatcher::test_max_templates_per_char
+FAILED tests/test_parser.py::TestTemplateMatcher::test_save_and_load
+```
+
+CI only stays green because it runs from a fresh checkout where the file does
+not exist.  Anyone who runs the app and then runs the tests sees failures that
+have nothing to do with their changes.
+
+`templates/*.npz` is also not in `.gitignore`, so learned templates show up as
+untracked noise in `git status`.
+
+**Fix:** let `TemplateMatcher` take an explicit path, default the tests to a
+temp directory, and gitignore the artefact.
+
+---
+
 ## #9 — Migrate the GUI from Tkinter to PySide6
 
 **Type:** feature · **Severity:** n/a · **Status:** open

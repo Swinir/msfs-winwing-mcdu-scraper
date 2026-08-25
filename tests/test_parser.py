@@ -102,7 +102,23 @@ class TestMCDUParser(unittest.TestCase):
 
 
 class TestTemplateMatcher(unittest.TestCase):
-    """Test cases for TemplateMatcher"""
+    """Test cases for TemplateMatcher.
+
+    Every matcher is pointed at a temp directory.  A bare ``TemplateMatcher()``
+    would load the user's real ``templates/mcdu_templates.npz``, making these
+    results depend on whether the app has ever been run on this machine.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.tmp_path = Path(self._tmpdir.name)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def _matcher(self, name: str = "templates.npz") -> TemplateMatcher:
+        """An isolated matcher backed by a file under the temp directory."""
+        return TemplateMatcher(template_path=self.tmp_path / name)
 
     def _make_glyph(self, char_code: int, size: tuple = (12, 18)):
         """Create a synthetic binary glyph for testing."""
@@ -118,7 +134,7 @@ class TestTemplateMatcher(unittest.TestCase):
         return glyph
 
     def test_learn_and_recognize(self):
-        matcher = TemplateMatcher()
+        matcher = self._matcher()
         glyph = self._make_glyph(65)  # 'A' pattern
         matcher.learn("A", glyph, confidence=1.0)
         matcher.learn("A", glyph, confidence=1.0)
@@ -128,44 +144,56 @@ class TestTemplateMatcher(unittest.TestCase):
         self.assertGreaterEqual(result[1], 0.78)
 
     def test_no_match_returns_none(self):
-        matcher = TemplateMatcher()
+        matcher = self._matcher()
         glyph = self._make_glyph(66)
         result = matcher.recognize(glyph)
         self.assertIsNone(result)
 
     def test_low_confidence_not_learned(self):
-        matcher = TemplateMatcher()
+        matcher = self._matcher()
         glyph = self._make_glyph(67)
         matcher.learn("C", glyph, confidence=0.1)
         self.assertEqual(matcher.template_count, 0)
 
     def test_duplicate_not_stored(self):
-        matcher = TemplateMatcher()
+        matcher = self._matcher()
         glyph = self._make_glyph(68)
         matcher.learn("D", glyph)
         matcher.learn("D", glyph)  # exact duplicate
         self.assertEqual(matcher.template_count, 1)
 
     def test_save_and_load(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            matcher = TemplateMatcher()
-            matcher._template_path = Path(tmpdir) / "test_templates.npz"
-            glyph_a = self._make_glyph(65)
-            glyph_b = self._make_glyph(66)
-            matcher.learn("A", glyph_a)
-            matcher.learn("A", glyph_a)
-            matcher.learn("B", glyph_b)
-            matcher.learn("B", glyph_b)
-            matcher.save()
+        matcher = self._matcher("roundtrip.npz")
+        glyph_a = self._make_glyph(65)
+        glyph_b = self._make_glyph(66)
+        matcher.learn("A", glyph_a)
+        matcher.learn("A", glyph_a)
+        matcher.learn("B", glyph_b)
+        matcher.learn("B", glyph_b)
+        matcher.save()
 
-            # Load into a fresh matcher
-            matcher2 = TemplateMatcher()
-            matcher2._template_path = Path(tmpdir) / "test_templates.npz"
-            matcher2._load()
-            self.assertEqual(matcher2.template_count, matcher.template_count)
+        # A fresh matcher on the same path loads what was written.
+        matcher2 = self._matcher("roundtrip.npz")
+        self.assertEqual(matcher2.template_count, matcher.template_count)
+
+    def test_fresh_matcher_ignores_unrelated_templates(self):
+        """Two matchers on different paths must not see each other's glyphs."""
+        first = self._matcher("one.npz")
+        first.learn("A", self._make_glyph(65))
+        first.learn("A", self._make_glyph(65))
+        first.save()
+
+        second = self._matcher("two.npz")
+        self.assertEqual(second.template_count, 0)
+
+    def test_default_path_is_not_used_when_path_given(self):
+        matcher = self._matcher("explicit.npz")
+        self.assertNotEqual(
+            matcher._template_path, TemplateMatcher.DEFAULT_TEMPLATE_PATH
+        )
 
     def test_hash_cache_exact_match(self):
-        matcher = TemplateMatcher()
+        matcher = self._matcher()
         glyph = self._make_glyph(69)
         matcher.learn("E", glyph)
         matcher.learn("E", glyph)
@@ -176,7 +204,7 @@ class TestTemplateMatcher(unittest.TestCase):
         self.assertEqual(r2[1], 1.0)  # hash cache returns confidence 1.0
 
     def test_max_templates_per_char(self):
-        matcher = TemplateMatcher()
+        matcher = self._matcher()
         for i in range(10):
             glyph = self._make_glyph(70 + i * 100)
             matcher.learn("X", glyph)
@@ -288,18 +316,21 @@ class TestRowCacheScoping(unittest.TestCase):
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
 
+        # Swap the module singleton for a matcher backed by a temp file, so
+        # this test neither reads nor writes the user's real template store.
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._saved_matcher = mcdu_parser._template_matcher
+        self.matcher = TemplateMatcher(
+            template_path=Path(self._tmpdir.name) / "t.npz"
+        )
+        mcdu_parser._template_matcher = self.matcher
+
         # parse_grid() short-circuits to a contour-only path when there is
         # no OCR engine *and* no templates.  Seed one template so the
-        # caching path under test is actually reached, and redirect saves
-        # to a temp dir so the repo's templates/ is left alone.
-        self.matcher = mcdu_parser._get_template_matcher()
-        self._saved_path = self.matcher._template_path
-        self._tmpdir = tempfile.TemporaryDirectory()
-        self.matcher._template_path = Path(self._tmpdir.name) / "t.npz"
-        self._seeded = self.matcher.template_count == 0
-        if self._seeded:
-            self.matcher.learn("A", self._seed_glyph())
-            self.matcher.learn("A", self._seed_glyph())
+        # caching path under test is actually reached.
+        self.matcher.learn("A", self._seed_glyph())
+        self.matcher.learn("A", self._seed_glyph())
+        self.assertGreater(self.matcher.template_count, 0)
 
         # 24x14 grid at 20 px per cell.  Row 3, columns 0-9 carry a glyph
         # whose normalised form matches the seeded template, so the cells
@@ -321,9 +352,7 @@ class TestRowCacheScoping(unittest.TestCase):
         self.mod._prev_row_ocr.clear()
         self.mod._prev_row_imgs.update(self._saved_imgs)
         self.mod._prev_row_ocr.update(self._saved_ocr)
-        if self._seeded:
-            self.matcher.reset()
-        self.matcher._template_path = self._saved_path
+        self.mod._template_matcher = self._saved_matcher
         self._tmpdir.cleanup()
 
     def test_cache_keys_are_namespaced_by_source(self):

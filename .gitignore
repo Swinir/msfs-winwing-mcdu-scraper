@@ -64,3 +64,6 @@ release/
 *.app
 *.dmg
 .claude/settings.local.json
+
+# Learned OCR templates (regenerated at runtime)
+templates/*.npz
