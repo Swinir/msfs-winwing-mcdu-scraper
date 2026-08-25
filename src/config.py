@@ -5,7 +5,7 @@ Configuration management for MSFS A330 WinWing MCDU Scraper
 import os
 import yaml
 import logging
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional, Tuple
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -137,6 +137,54 @@ class Config:
                 "(e.g. ws://localhost:8320/winwing/cdu-co-pilot)."
             )
         return url
+
+    def get_crop_region(self, mcdu: str) -> Optional[Tuple[int, int, int, int]]:
+        """Get the optional crop region for an MCDU, as (x, y, width, height).
+
+        The captured window usually contains far more than the MCDU screen.
+        Without a crop the whole window is carved into the character grid and
+        the parse is meaningless, so this is how the CLI is told which part of
+        the window to look at.  The GUI sets the same thing interactively via
+        its region selector.
+
+        Args:
+            mcdu: 'captain' or 'copilot'.
+
+        Returns:
+            (x, y, width, height), or None when no crop is configured.
+        """
+        section = self.config_data['mcdu'].get(mcdu) or {}
+        crop = section.get('crop')
+        if not crop:
+            return None
+
+        missing = [k for k in ('x', 'y', 'width', 'height') if k not in crop]
+        if missing:
+            raise ValueError(
+                f"Incomplete crop region for the {mcdu} MCDU: missing "
+                f"{', '.join(missing)}. A crop needs x, y, width and height."
+            )
+
+        try:
+            x, y = int(crop['x']), int(crop['y'])
+            width, height = int(crop['width']), int(crop['height'])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Crop region for the {mcdu} MCDU has non-numeric values: {exc}"
+            ) from exc
+
+        if width <= 0 or height <= 0:
+            raise ValueError(
+                f"Crop region for the {mcdu} MCDU must have a positive width "
+                f"and height, got {width}x{height}."
+            )
+        if x < 0 or y < 0:
+            raise ValueError(
+                f"Crop region for the {mcdu} MCDU must have non-negative x/y, "
+                f"got x={x}, y={y}."
+            )
+
+        return (x, y, width, height)
 
     def get_captain_window_title(self) -> str:
         """Get the window title used to locate the captain MCDU capture window."""

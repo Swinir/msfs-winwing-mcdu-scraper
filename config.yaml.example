@@ -7,9 +7,27 @@ mcdu:
     # Example: "Microsoft Flight Simulator" or "MCDU"
     window_title: "Microsoft Flight Simulator"
 
+    # Crop the captured window down to just the MCDU screen.
+    # STRONGLY RECOMMENDED: without it the *whole window* is carved into the
+    # 24x14 character grid, which only works if the window happens to be
+    # exactly the MCDU display.
+    # Coordinates are relative to the captured window's top-left corner.
+    # Easiest way to find them: run the GUI, pick your window, click
+    # "Select Screen Area" (or "Auto Detect"), and copy the reported values.
+    # crop:
+    #   x: 0
+    #   y: 0
+    #   width: 480
+    #   height: 280
+
   copilot:
     enabled: false
     # window_title: "Microsoft Flight Simulator"
+    # crop:
+    #   x: 0
+    #   y: 0
+    #   width: 480
+    #   height: 280
 
 mobiflight:
   captain_url: "ws://localhost:8320/winwing/cdu-captain"
@@ -19,6 +37,8 @@ mobiflight:
 
 performance:
   capture_fps: 30
+  # Reuse the previous parse when a frame is nearly identical to the last
+  # one.  Big CPU saving on a static MCDU page; turn off only when debugging.
   enable_caching: true
 
 # OCR settings (optional — sensible defaults are used if omitted)

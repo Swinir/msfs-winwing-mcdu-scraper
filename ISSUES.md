@@ -32,7 +32,7 @@ The advertised dual-MCDU feature cannot produce correct output as written.
 
 ## #2 — CLI has no crop-region support
 
-**Type:** bug · **Severity:** high · **Status:** open
+**Type:** bug · **Severity:** high · **Status:** FIXED
 
 `main.py` constructs `WindowCapture(window_title=window_title)` with no
 `crop_region`, so the **entire window** is handed to `MCDUParser` and carved
@@ -49,7 +49,7 @@ from configuration either.
 
 ## #3 — CLI and GUI have forked into two different applications
 
-**Type:** refactor · **Severity:** medium · **Status:** open
+**Type:** refactor · **Severity:** medium · **Status:** FIXED
 
 `gui.py` grew frame-change detection (MSE), temporal stabilisation
 (`STABILITY_FRAMES`), and send-only-on-change.  `main.py` has none of it and
@@ -65,7 +65,7 @@ This also unblocks #9, since the Qt GUI should not re-implement it a third time.
 
 ## #4 — Blocking CPU work runs on the asyncio event loop
 
-**Type:** bug · **Severity:** medium · **Status:** open
+**Type:** bug · **Severity:** medium · **Status:** FIXED
 
 `parse_grid()` is synchronous OpenCV work, and during warmup roughly 30 seconds
 of EasyOCR.  It is called inline from `async` loops in both front ends with no

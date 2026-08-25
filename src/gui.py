@@ -9,10 +9,8 @@ import logging
 import asyncio
 import threading
 import sys
-import time as _time
 import traceback
 from pathlib import Path
-from typing import Optional
 import queue
 
 # Add src to path (handle both normal and PyInstaller frozen execution)
@@ -22,11 +20,10 @@ if getattr(sys, 'frozen', False):
 else:
     sys.path.insert(0, str(Path(__file__).parent))
 
-import numpy as np
 from config import Config
 from window_capture import WindowCapture, WINDOWS_AVAILABLE
-from mcdu_parser import MCDUParser
 from mobiflight_client import MobiFlightClient
+from pipeline import MCDUPipeline, PipelineSettings
 from region_selector import RegionSelectorDialog
 
 
@@ -55,6 +52,7 @@ class MCDUScraperGUI:
         # State
         self.running = False
         self.capture = None
+        self.pipeline = None
         self.clients = {}
         self.scraper_thread = None
         self.loop = None
@@ -352,7 +350,9 @@ class MCDUScraperGUI:
                 self.loop.close()
     
     async def async_scraper(self):
-        """Async scraper main loop"""
+        """Drive the shared capture pipeline until the user stops it."""
+        client = None
+        client_task = None
         try:
             # Initialize MobiFlight client
             client = MobiFlightClient(
@@ -360,180 +360,54 @@ class MCDUScraperGUI:
                 font=self.config.get_font(),
                 max_retries=self.config.get_max_retries()
             )
-            
+
             # Start client connection
             client_task = asyncio.create_task(client.run())
-            
+
             # Wait for connection
             await client.connected.wait()
             self.log("Connected to WinWing CDU")
-            
-            # Main capture loop
-            fps = self.config.get_capture_fps()
-            frame_delay = 1.0 / fps
-            frame_count = 0
-            debug_interval = 150  # Log debug info every N frames (~5 s at 30 FPS)
-            _last_frame_img = None
-            _last_display_data = None
 
-            # --- Temporal stabilisation ---
-            # A cell only changes on the physical CDU when the *new* value
-            # has been seen for STABILITY_FRAMES consecutive frames.
-            # This eliminates per-frame OCR jitter / flicker.
-            STABILITY_FRAMES = 3
-            _stable_display: Optional[list] = None
-            _pending_display: Optional[list] = None
-            _pending_counts: Optional[list] = None
-            _last_sent_display: Optional[list] = None
-            
-            while self.running:
-                frame_start = asyncio.get_event_loop().time()
-                
-                try:
-                    # Capture screen/window
-                    img = self.capture.capture()
-                    frame_count += 1
-                    
-                    # Debug: log frame info periodically
-                    if frame_count % debug_interval == 1:
-                        avg_brightness = float(np.mean(img))
-                        self.log(
-                            f"[DEBUG] Frame #{frame_count}: "
-                            f"shape={img.shape}, "
-                            f"avg_brightness={avg_brightness:.1f}, "
-                            f"min={int(img.min())}, max={int(img.max())}"
-                        )
-                        if avg_brightness < 5.0:
-                            self.log(
-                                "[DEBUG] WARNING: Captured image is nearly all black! "
-                                "The window content may not be captured correctly.",
-                                level="WARNING"
-                            )
-                    
-                    # --- Fuzzy frame comparison (MSE) ---
-                    _frame_changed = True
-                    if _last_frame_img is not None and _last_display_data is not None:
-                        if img.shape == _last_frame_img.shape:
-                            mse = float(np.mean(
-                                (img.astype(np.float32) - _last_frame_img.astype(np.float32)) ** 2
-                            ))
-                            if mse < 3.0:
-                                _frame_changed = False
+            # The capture/parse/stabilise/send loop lives in pipeline.py so
+            # the GUI and the CLI cannot drift apart.  Its progress reaches
+            # the log pane through the root logging handler installed in
+            # setup_logging().
+            self.pipeline = MCDUPipeline(
+                name="gui",
+                capture=self.capture,
+                client=client,
+                columns=Config.CDU_COLUMNS,
+                rows=Config.CDU_ROWS,
+                settings=PipelineSettings(
+                    fps=self.config.get_capture_fps(),
+                    enable_caching=self.config.get_enable_caching(),
+                ),
+            )
 
-                    if not _frame_changed:
-                        display_data = _last_display_data
-                        _parse_ms = 0.0
-                    else:
-                        # Parse MCDU grid
-                        _t0 = _time.perf_counter()
-                        parser = MCDUParser(
-                            img,
-                            columns=Config.CDU_COLUMNS,
-                            rows=Config.CDU_ROWS,
-                            source_id="gui",
-                        )
-                        display_data = parser.parse_grid()
-                        _parse_ms = (_time.perf_counter() - _t0) * 1000
-                        _last_frame_img = img.copy()
-                        _last_display_data = display_data
+            pipeline_task = asyncio.create_task(self.pipeline.run())
 
-                    # --- Temporal stabilisation ---
-                    # Only update a cell when the new value has been
-                    # consistent for STABILITY_FRAMES in a row.
-                    if _stable_display is None:
-                        _stable_display = list(display_data)
-                        _pending_display = list(display_data)
-                        _pending_counts = [0] * len(display_data)
-                    else:
-                        n = min(len(display_data), len(_stable_display))
-                        for i in range(n):
-                            if display_data[i] == _stable_display[i]:
-                                _pending_counts[i] = 0
-                                _pending_display[i] = display_data[i]
-                            elif display_data[i] == _pending_display[i]:
-                                _pending_counts[i] += 1
-                                if _pending_counts[i] >= STABILITY_FRAMES:
-                                    _stable_display[i] = display_data[i]
-                                    _pending_counts[i] = 0
-                            else:
-                                _pending_display[i] = display_data[i]
-                                _pending_counts[i] = 1
+            # Poll the UI flag so Stop takes effect promptly.
+            while self.running and not pipeline_task.done():
+                await asyncio.sleep(0.1)
 
-                    # Use the stabilised output
-                    display_data = list(_stable_display)
+            self.pipeline.stop()
+            await pipeline_task
 
-                    # Debug: log OCR results periodically
-                    if frame_count % debug_interval == 1:
-                        non_empty = [cell for cell in display_data if cell]
-                        self.log(
-                            f"[DEBUG] OCR: {len(non_empty)}/{len(display_data)} "
-                            f"cells detected ({_parse_ms:.0f} ms)"
-                        )
-                        if non_empty:
-                            sample = non_empty[:10]
-                            sample_str = ", ".join(
-                                f"'{c[0]}'({c[1]})" for c in sample
-                            )
-                            self.log(f"[DEBUG] Sample cells: {sample_str}")
-
-                            # Full grid dump (24 columns × 14 rows)
-                            cols = Config.CDU_COLUMNS
-                            rows_n = Config.CDU_ROWS
-                            self.log("[DEBUG] ── MCDU Grid ──")
-                            for r in range(rows_n):
-                                row_chars = []
-                                row_colors = []
-                                for c in range(cols):
-                                    idx = r * cols + c
-                                    if idx < len(display_data) and display_data[idx]:
-                                        ch = display_data[idx][0]
-                                        cl = display_data[idx][1]
-                                    else:
-                                        ch = " "
-                                        cl = " "
-                                    row_chars.append(ch if len(ch) == 1 else ch[0])
-                                    row_colors.append(cl)
-                                text_line = "".join(row_chars)
-                                color_line = "".join(row_colors)
-                                self.log(
-                                    f"[DEBUG] R{r:02d} |{text_line}| "
-                                    f"c:{color_line}"
-                                )
-                            self.log("[DEBUG] ── End Grid ──")
-                        else:
-                            self.log(
-                                "[DEBUG] No characters detected by OCR. "
-                                "Check that the MCDU content is visible "
-                                "in the captured area.",
-                                level="WARNING"
-                            )
-                    
-                    # Only send when stable data actually changed
-                    if display_data != _last_sent_display:
-                        await client.send_display_data(display_data)
-                        _last_sent_display = list(display_data)
-                    
-                except Exception as e:
-                    self.log(f"Frame error: {e}", level="ERROR")
-                    self.log(f"[DEBUG] {traceback.format_exc()}", level="ERROR")
-                
-                # Maintain target FPS
-                frame_elapsed = asyncio.get_event_loop().time() - frame_start
-                sleep_time = max(0, frame_delay - frame_elapsed)
-                await asyncio.sleep(sleep_time)
-            
-            # Cleanup
-            client_task.cancel()
-            try:
-                await client_task
-            except asyncio.CancelledError:
-                pass
-            await client.close()
             self.log("Scraper stopped")
-            
+
         except Exception as e:
             self.log(f"Async scraper error: {e}", level="ERROR")
-    
+            self.log(f"[DEBUG] {traceback.format_exc()}", level="ERROR")
+        finally:
+            if client_task is not None:
+                client_task.cancel()
+                try:
+                    await client_task
+                except asyncio.CancelledError:
+                    pass
+            if client is not None:
+                await client.close()
+
     def log(self, message: str, level: str = "INFO"):
         """Add log message"""
         timestamp = logging.Formatter().formatTime(logging.LogRecord(
