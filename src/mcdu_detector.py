@@ -1,18 +1,28 @@
 """
-Automatic MCDU display detection for Airbus A330.
+Automatic MCDU display detection.
 
-Detects the MCDU text grid within a captured window image by finding the
-rectangular region with bright text on a dark background whose aspect ratio
-is consistent with the 24×14 character grid.
+Finds the character grid inside a captured window so that the crop handed to
+the parser lines up with the cells.
 
-The detection pipeline:
-  1. Max-channel grayscale  (preserves coloured text brightness)
-  2. Multi-strategy candidate generation:
-     a) Row-gap analysis — look for evenly-spaced text rows (the hallmark
-        of an MCDU grid) by analysing horizontal projection profiles.
-     b) Contour-based fallback — dilate text blobs, score by area & aspect.
-  3. Grid-structure validation  (count row gaps ≈ rows−1)
-  4. Projection-profile refinement  (trim to exact text bounds)
+Precision matters far more here than it looks.  Measured against rendered
+pages, a crop half a character cell out of position scores 0% recognition,
+and one 5% too wide scores 41%.  A box that merely looks right is worthless,
+which is why this detects the character *pitch* and phase-aligns to it rather
+than returning a bounding box around the text:
+
+  1. Isolate ink sitting on a dark background, which excludes window chrome.
+  2. Find the text rows, discarding solid rules and bezel lines.
+  3. Estimate row and column pitch from the spacing between glyphs, then
+     refit to reject anything off the lattice.
+  4. Place the grid origin on that lattice and return columns x pitch.
+
+Returning the grid rather than the text bounds also handles sparse pages: one
+whose right-hand columns are blank still yields the full 24x14 area, where a
+bounding box would crop the empty columns away and shift every character into
+the wrong cell.
+
+The older bounding-box strategies remain as fallbacks for captures where the
+pitch cannot be established.
 """
 
 import numpy as np
@@ -26,6 +36,198 @@ logger = logging.getLogger(__name__)
 # 24 columns / 14 rows ≈ 1.71, but the pixel aspect depends on cell shape.
 _ASPECT_MIN = 1.0
 _ASPECT_MAX = 3.0
+
+
+# ------------------------------------------------------------------
+#  Pitch-based grid detection (primary strategy)
+# ------------------------------------------------------------------
+
+#: Minimum local contrast for a pixel to count as ink.
+_INK_CONTRAST = 40
+
+#: A band this thin that runs edge to edge is a rule, not a line of text.
+_RULE_MAX_THICKNESS = 6
+_RULE_MIN_SOLIDITY = 0.92
+
+
+def _ink_mask(image: np.ndarray) -> Optional[np.ndarray]:
+    """Ink that sits on a dark background.
+
+    Window chrome carries text too - a title bar, tab labels, menus - and
+    including it wrecks the pitch estimate.  MCDU glyphs are distinguished by
+    what they sit on: a dark screen, where chrome text sits on a light one.
+    """
+    gray = np.max(image, axis=2) if image.ndim == 3 else image
+    height, width = gray.shape[:2]
+
+    # A median wide enough to swallow the glyphs leaves the background behind.
+    kernel = max(5, (min(height, width) // 20) | 1)
+    background = cv2.medianBlur(gray, kernel)
+
+    ink = (gray.astype(np.int16) - background.astype(np.int16)) > _INK_CONTRAST
+    if not ink.any():
+        return None
+
+    threshold, _ = cv2.threshold(background, 0, 255,
+                                 cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    on_dark = ink & (background < threshold)
+
+    # If almost nothing survives, the capture is probably the screen alone
+    # with no chrome to exclude; keep the unfiltered ink instead.
+    if on_dark.sum() > ink.sum() * 0.3:
+        return on_dark
+    return ink
+
+
+def _text_rows(mask: np.ndarray) -> List[Tuple[int, int]]:
+    """Vertical extents of text rows, excluding solid rules and borders."""
+    projection = mask.sum(axis=1)
+    rows: List[Tuple[int, int]] = []
+    start = None
+    for i, has_ink in enumerate(projection > 0):
+        if has_ink and start is None:
+            start = i
+        elif not has_ink and start is not None:
+            rows.append((start, i - 1))
+            start = None
+    if start is not None:
+        rows.append((start, len(projection) - 1))
+
+    kept = []
+    for top, bottom in rows:
+        occupied = mask[top:bottom + 1, :].any(axis=0)
+        extent = np.nonzero(occupied)[0]
+        if extent.size == 0:
+            continue
+        # Text is broken up by the gaps between glyphs; a bezel line or an
+        # underline runs continuously from one edge to the other.
+        solidity = occupied[extent[0]:extent[-1] + 1].mean()
+        if (solidity > _RULE_MIN_SOLIDITY
+                and (bottom - top + 1) <= _RULE_MAX_THICKNESS):
+            continue
+        kept.append((top, bottom))
+    return kept
+
+
+def _glyph_centers_per_row(mask: np.ndarray,
+                           rows: List[Tuple[int, int]]) -> List[List[float]]:
+    """Horizontal glyph centres, gathered one text row at a time.
+
+    Projecting the whole image onto the x axis fails as soon as the page is
+    busy: nearly every column has ink in some row, so the projection never
+    returns to zero and the entire width reads as a single run.  Within one
+    row the gaps between glyphs survive.
+    """
+    per_row = []
+    for top, bottom in rows:
+        projection = mask[top:bottom + 1, :].sum(axis=0)
+        centers, start = [], None
+        for i, has_ink in enumerate(projection > 0):
+            if has_ink and start is None:
+                start = i
+            elif not has_ink and start is not None:
+                centers.append((start + i - 1) / 2.0)
+                start = None
+        if start is not None:
+            centers.append((start + len(projection) - 1) / 2.0)
+        if len(centers) >= 2:
+            per_row.append(centers)
+    return per_row
+
+
+def _fit_lattice(centers, pitch: float):
+    """Drop centres that do not sit on the pitch lattice, then refit."""
+    values = np.asarray(centers, dtype=float)
+    phase = values[0] % pitch
+    index = np.round((values - phase) / pitch)
+    residual = np.abs((values - phase) - index * pitch)
+    keep = residual < pitch * 0.3
+    if keep.sum() < 2:
+        return list(centers), pitch
+
+    values, index = values[keep], index[keep]
+    span = index[-1] - index[0]
+    if span >= 1:
+        # Fitting across the whole span averages out per-glyph rounding.
+        pitch = float((values[-1] - values[0]) / span)
+    return values.tolist(), pitch
+
+
+def _pitch_from_spacings(spacings: np.ndarray) -> Optional[float]:
+    """Cell pitch from centre-to-centre spacings, which are whole multiples."""
+    spacings = spacings[spacings > 0.5]
+    if spacings.size == 0:
+        return None
+    # Most neighbouring glyphs sit one cell apart; wider gaps are multiples.
+    base = np.percentile(spacings, 20)
+    single = spacings[spacings <= base * 1.6]
+    if single.size == 0:
+        single = spacings
+    pitch = float(np.median(single))
+    return pitch if pitch >= 2 else None
+
+
+def _choose_origin(centers, pitch: float, n_cells: int,
+                   lo: float, hi: float) -> float:
+    """Place the grid origin on the lattice so that it covers all the text."""
+    phase = (centers[0] - pitch / 2) % pitch
+    highest = int(np.floor((lo - phase) / pitch)) + 1
+    for k in range(highest, highest - n_cells - 2, -1):
+        origin = phase + k * pitch
+        if origin > lo + 0.5:
+            continue
+        if origin + n_cells * pitch < hi - 0.5:
+            continue
+        if origin < -pitch * 0.6:
+            continue
+        return origin
+    return phase + np.floor((lo - phase) / pitch) * pitch
+
+
+def _detect_via_pitch(image: np.ndarray, columns: int,
+                      rows: int) -> Optional[Tuple[int, int, int, int]]:
+    """Locate the character grid by its pitch.  Returns (x, y, width, height)."""
+    mask = _ink_mask(image)
+    if mask is None:
+        return None
+    height, width = mask.shape
+
+    row_bounds = _text_rows(mask)
+    if len(row_bounds) < 2:
+        return None
+
+    row_centers = [(top + bottom) / 2.0 for top, bottom in row_bounds]
+    row_pitch = _pitch_from_spacings(np.diff(np.asarray(row_centers, float)))
+    if row_pitch is None:
+        return None
+    row_centers, row_pitch = _fit_lattice(row_centers, row_pitch)
+
+    per_row = _glyph_centers_per_row(mask, row_bounds)
+    if not per_row:
+        return None
+    spacings = np.concatenate([np.diff(np.asarray(c, float)) for c in per_row])
+    col_pitch = _pitch_from_spacings(spacings)
+    if col_pitch is None:
+        return None
+    col_centers = sorted(c for centers in per_row for c in centers)
+    col_centers, col_pitch = _fit_lattice(col_centers, col_pitch)
+
+    # Bounds come from validated text, never from the raw ink bounding box:
+    # a bezel line or window border stretches the bbox and slides the whole
+    # grid a cell out of place, which alone is enough to destroy recognition.
+    y_lo, y_hi = row_bounds[0][0], row_bounds[-1][1] + 1
+    x_lo = min(col_centers) - col_pitch / 2
+    x_hi = max(col_centers) + col_pitch / 2
+
+    x = int(round(_choose_origin(col_centers, col_pitch, columns, x_lo, x_hi)))
+    y = int(round(_choose_origin(row_centers, row_pitch, rows, y_lo, y_hi)))
+    x, y = max(0, x), max(0, y)
+    w = min(int(round(columns * col_pitch)), width - x)
+    h = min(int(round(rows * row_pitch)), height - y)
+
+    if w < columns or h < rows:
+        return None
+    return (x, y, w, h)
 
 
 # ------------------------------------------------------------------
@@ -54,6 +256,27 @@ def detect_mcdu_region(
     """
     h, w = image.shape[:2]
     total_area = h * w
+
+    # Preferred: lock onto the character pitch.  This is the only strategy
+    # that yields a crop aligned to the cells rather than merely surrounding
+    # the text, and alignment is what recognition actually depends on.
+    grid = _detect_via_pitch(image, columns, rows)
+    if grid is not None:
+        gx, gy, gw, gh = grid
+        area_frac = (gw * gh) / total_area
+        aspect = gw / max(gh, 1)
+        if (min_area_frac <= area_frac <= max_area_frac
+                and _ASPECT_MIN <= aspect <= _ASPECT_MAX):
+            logger.info(
+                "Detected MCDU grid by pitch: x=%d, y=%d, w=%d, h=%d "
+                "(cell %.2fx%.2f px)",
+                gx, gy, gw, gh, gw / columns, gh / rows,
+            )
+            return grid
+        logger.debug(
+            "Pitch detection rejected: area_frac=%.3f aspect=%.2f",
+            area_frac, aspect,
+        )
 
     # 1. Max-channel grayscale (coloured text → bright)
     if len(image.shape) == 3:

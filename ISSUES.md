@@ -197,6 +197,55 @@ rewritten for Qt.
 
 ---
 
+## #12 — Auto-detect returned a box, not a grid
+
+**Type:** bug · **Severity:** high · **Status:** FIXED
+
+The "Auto Detect" button was unusable in practice.  Two independent causes,
+both measured against rendered MCDU pages:
+
+**Chrome broke detection outright.**  With a title bar in the capture — which
+every real capture has — detection collapsed.  On the PERF page it returned a
+77x43 box in the middle of the screen (IoU 0.02); on another it returned the
+entire window (IoU 0.51).  Mean IoU across 18 scenarios was 0.67.
+
+**Even a "good" box was the wrong shape.**  The detector returned the bounding
+box of the *text*, but the parser needs the bounds of the *grid*.  On a page
+whose right-hand columns are blank, the box stops at the last glyph, and
+dividing that strip into 24 columns puts every character in the wrong cell.
+
+Precision requirements turned out to be far tighter than IoU suggests:
+
+| crop error | recognition |
+|---|---|
+| exact | 100% |
+| 1/4 cell shift | 97% |
+| 1/2 cell shift | **0%** |
+| 5% too wide | 41% |
+
+Detection now locks onto the character pitch and phase-aligns the grid to it.
+Mean IoU 0.67 -> 0.99, and recognition through the detected crop 4.5% -> 100%.
+
+---
+
+## #13 — The parser resampled every capture
+
+**Type:** bug · **Severity:** high · **Status:** FIXED
+
+`MCDUParser` resized each frame so the grid divided evenly into whole pixels.
+Crop sizes are almost never exact multiples, so nearly every frame went
+through `cv2.resize`, and INTER_AREA blurs thin glyph strokes.
+
+Worse, the blur depended on the crop size, so templates learned at one size
+stopped matching at another.  A crop one pixel wider than the one templates
+were learned from took recognition from 100% to 51% — which made the whole
+system hostage to exact crop dimensions.
+
+Cells are now partitioned with rounded fractional edges: no interpolation,
+and cell sizes differ by at most a pixel.
+
+---
+
 ## #9 — Migrate the GUI from Tkinter to PySide6
 
 **Type:** feature · **Severity:** n/a · **Status:** FIXED

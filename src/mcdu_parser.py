@@ -552,16 +552,30 @@ class MCDUParser:
         # share cache entries and serve each other stale rows.
         self.source_id = source_id
 
-        # Snap to exact multiples so every cell has identical pixel size
-        target_w = (image.shape[1] // columns) * columns
-        target_h = (image.shape[0] // rows) * rows
-        if image.shape[1] != target_w or image.shape[0] != target_h:
-            image = cv2.resize(image, (target_w, target_h),
-                               interpolation=cv2.INTER_AREA)
+        # Partition the image into cells with fractional boundaries instead
+        # of resampling it to an exact multiple of the grid.
+        #
+        # The old code resized the capture so every cell was a whole number
+        # of pixels.  Crop sizes are almost never exact multiples, so nearly
+        # every frame went through cv2.resize, and INTER_AREA blurs thin
+        # glyph strokes.  Worse, the blur depends on the crop size: a crop
+        # one pixel wider than another resamples differently, so templates
+        # learned at one size stopped matching at the other.  Measured on a
+        # rendered page, a single pixel of extra width took recognition from
+        # 100% to 51%.
+        #
+        # Rounded edges give cells that differ by at most a pixel and cost no
+        # interpolation at all.
         self.image = image
+        height, width = image.shape[:2]
 
-        self.cell_width = target_w // columns
-        self.cell_height = target_h // rows
+        self._col_edges = [round(c * width / columns) for c in range(columns + 1)]
+        self._row_edges = [round(r * height / rows) for r in range(rows + 1)]
+
+        # Kept as floats for OCR position mapping, which works in continuous
+        # coordinates rather than whole cells.
+        self.cell_width = width / columns
+        self.cell_height = height / rows
 
         # Per-image background floor (for adaptive thresholding)
         max_ch = np.max(image, axis=2)
@@ -569,8 +583,8 @@ class MCDUParser:
 
         logger.debug(
             "MCDUParser: %dx%d grid, image %dx%d, "
-            "cell %dx%d px, bg_floor=%d",
-            rows, columns, target_w, target_h,
+            "cell %.2fx%.2f px, bg_floor=%d",
+            rows, columns, width, height,
             self.cell_width, self.cell_height, self._bg_floor,
         )
 
@@ -578,13 +592,13 @@ class MCDUParser:
     #  Cell / row extraction
     # ------------------------------------------------------------------
     def extract_cell(self, row: int, col: int) -> np.ndarray:
-        x = col * self.cell_width
-        y = row * self.cell_height
-        return self.image[y : y + self.cell_height, x : x + self.cell_width]
+        return self.image[
+            self._row_edges[row]:self._row_edges[row + 1],
+            self._col_edges[col]:self._col_edges[col + 1],
+        ]
 
     def _extract_row_image(self, row: int) -> np.ndarray:
-        y = row * self.cell_height
-        return self.image[y : y + self.cell_height, :]
+        return self.image[self._row_edges[row]:self._row_edges[row + 1], :]
 
     # ------------------------------------------------------------------
     #  Colour detection
