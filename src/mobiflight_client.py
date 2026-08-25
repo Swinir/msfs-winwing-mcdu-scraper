@@ -8,46 +8,15 @@ import websockets.asyncio.client as ws_client
 import json
 import logging
 
+from mcdu_charset import RENDERABLE, SUBSTITUTIONS, sanitise_char
+
 logger = logging.getLogger(__name__)
 
-# -----------------------------------------------------------------------
-# Characters that the WinWing CDU AirbusThales font can render.
-# Derived from the official MobiFlight Fenix / FBW / Headwind scripts.
-# Sending a character outside this set can freeze the CDU display.
-# -----------------------------------------------------------------------
-_CDU_SAFE_CHARS = set(
-    'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-    '0123456789'
-    ' .-/°<>[]()'
-    '\u2610'   # ☐  ballot box  (small square = selectable field)
-    '\u2190'   # ←  left arrow
-    '\u2192'   # →  right arrow
-    '\u2191'   # ↑  up arrow
-    '\u2193'   # ↓  down arrow
-    '\u0394'   # Δ  delta (overfly)
-)
-
-# Map characters that may come out of OCR to CDU-safe equivalents.
-# Anything not in this table *and* not in _CDU_SAFE_CHARS is replaced
-# with a space so the display never receives an unsupported glyph.
-_CDU_CHAR_MAP = {
-    '(': '[',
-    ')': ']',
-    '*': '.',
-    # '+' must NOT be mapped to '-'.  The MCDU shows '+' in temperature and
-    # vertical-speed fields, and folding it onto '-' inverts the sign — the
-    # display would read -15 for a real +15.  Dropping the glyph is wrong but
-    # obviously wrong; inverting it is wrong and looks correct.
-    # TODO: verify against real hardware whether AirbusThales renders '+'.
-    # If it does, remove this entry and add '+' to _CDU_SAFE_CHARS instead.
-    '+': ' ',
-    ':': '.',
-    '_': '-',
-    '~': '-',
-    '=': '-',
-    '<': '\u2190',   # ← left arrow (MCDU arrow indicator)
-    '>': '\u2192',   # → right arrow (MCDU arrow indicator)
-}
+# The renderable set and the substitution table live in mcdu_charset so the
+# parser and this client cannot drift apart on what a character may be.
+# Re-exported under the old private names: existing callers and tests use them.
+_CDU_SAFE_CHARS = RENDERABLE
+_CDU_CHAR_MAP = SUBSTITUTIONS
 
 
 def sanitise_display_data(display_data: list) -> list:
@@ -69,17 +38,7 @@ def sanitise_display_data(display_data: list) -> list:
         if not cell:
             sanitised.append([])
             continue
-        char = cell[0]
-        # Multi-char strings from contour fallback (e.g. "<>", "^v")
-        # — take first character only.
-        if len(char) > 1:
-            char = char[0]
-        # Map to CDU-safe equivalent
-        if char in _CDU_CHAR_MAP:
-            char = _CDU_CHAR_MAP[char]
-        elif char not in _CDU_SAFE_CHARS:
-            char = ' '
-        sanitised.append([char, cell[1], cell[2]])
+        sanitised.append([sanitise_char(cell[0]), cell[1], cell[2]])
     return sanitised
 
 

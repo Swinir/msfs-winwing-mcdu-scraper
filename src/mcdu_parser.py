@@ -28,6 +28,8 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
+from mcdu_charset import OCR_ALLOWLIST, RENDERABLE
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -48,12 +50,13 @@ except ImportError:
 # ---------------------------------------------------------------------------
 #  MCDU character set & OCR fix-up tables
 # ---------------------------------------------------------------------------
-_MCDU_VALID_CHARS = set(
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "0123456789"
-    " +-*/.<>[]()-.:°"
-)
+# The parser accepts exactly what the display can render, and asks EasyOCR
+# for exactly that same set.  See mcdu_charset for why the hardware is the
+# authority here.
+_MCDU_VALID_CHARS = RENDERABLE
 
+# Residual OCR clean-ups for characters the allowlist cannot exclude
+# (case, and lookalikes the engine emits despite the allowlist).
 _OCR_FIXUPS: Dict[str, str] = {
     "l": "1", "|": "1", "!": "1",
     "o": "O", "{": "[", "}": "]",
@@ -61,162 +64,111 @@ _OCR_FIXUPS: Dict[str, str] = {
     "\\": "/",
     "_": "-", "~": "-",
     "\"": " ", "'": " ",
-    "@": "A", "#": "H",
-    "$": "S", "&": "8",
 }
 
-_EASYOCR_ALLOWLIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.+-/<>[]() "
+_EASYOCR_ALLOWLIST = OCR_ALLOWLIST
 
 
 # ---------------------------------------------------------------------------
-#  Structural disambiguation for commonly confused character pairs
+#  Context-based correction for letter/digit confusions
 # ---------------------------------------------------------------------------
+#
+#  This replaces an earlier per-glyph geometry heuristic that inspected
+#  stroke continuity to choose between D/O/0, A/B, B/8 and so on.  Measured
+#  against rendered MCDU pages that heuristic cost 7.4 percentage points of
+#  character accuracy: it relabelled almost every '0' as 'D' and many '8's as
+#  'B', and because it also ran inside learn() those wrong labels became
+#  permanent templates.
+#
+#  MCDU fields are strongly typed, which is a far more reliable signal than
+#  stroke geometry: "N0450", "FL350" and "1204" are numeric, "LFPG" and
+#  "AGOPA" are alphabetic.  A character is judged by the token it sits in.
 
-def _disambiguate_confusables(cell_binary: np.ndarray, char: str) -> str:
-    """Correct EasyOCR / template confusions using glyph geometry.
+#: Letter -> digit, applied inside an otherwise numeric token.
+#: 'L' is deliberately absent.  L->1 is a rare misread, but L is extremely
+#: common in ICAO codes and waypoint names (LFPG, LORNI); treating it as
+#: ambiguous robbed those tokens of the evidence needed to repair them.
+_TO_DIGIT = {"O": "0", "D": "0", "Q": "0", "I": "1",
+             "Z": "2", "S": "5", "G": "6", "B": "8"}
 
-    EasyOCR frequently confuses D↔O, A↔B, B↔8, O↔0, ]↔1, I↔/
-    because these glyphs share a similar outline at low resolution.
-    This function examines specific structural features to pick the
-    correct character.
+#: Digit -> letter, applied inside an otherwise alphabetic token.
+_TO_LETTER = {"0": "O", "1": "I", "2": "Z", "5": "S", "8": "B"}
 
-    Called during template *learning* (to prevent poisoning) and
-    during *recognition* output (to fix residual errors).
+#: Characters that end a token.  '.' is deliberately absent: it sits inside
+#: values like 110.30 and M.78, and splitting there loses the digit evidence
+#: that makes the rest of the number correctable.
+_NEUTRAL = set(" /-+:[]()<>*☐←→↑↓Δ")
+
+
+def _map_after_first(token: str, mapping: Dict[str, str]) -> str:
+    """Apply *mapping* to every character except the first.
+
+    The leading character of a token carries identity -- B738 is an aircraft
+    type, not the number 8738, and G5 is not 65.  Correcting only the
+    interior keeps the useful cases (46O -> 460, 4S2 -> 452, FL3SO -> FL350)
+    while leaving those identifiers alone.
     """
-    if char not in ('D', 'O', '0', 'A', 'B', '1', ']', '8', 'I', '/', 'C', 'G'):
-        return char
+    if not token:
+        return token
+    return token[0] + "".join(mapping.get(c, c) for c in token[1:])
 
-    coords = cv2.findNonZero(cell_binary)
-    if coords is None:
-        return char
-    x, y, bw, bh = cv2.boundingRect(coords)
-    if bw < 3 or bh < 3:
-        return char
-    glyph = cell_binary[y : y + bh, x : x + bw]
-    h, w = glyph.shape
 
-    # ------------------------------------------------------------------
-    #  D vs O  (and 0)
-    # ------------------------------------------------------------------
-    if char in ('D', 'O', '0'):
-        # D has a straight vertical bar on the left that runs the full
-        # height.  O/0 curve away at top-left and bottom-left corners.
-        left_cols = max(2, w // 6)
-        left_strip = glyph[:, :left_cols]
-        rows_with_ink = np.any(left_strip > 0, axis=1)
-        left_continuity = float(np.count_nonzero(rows_with_ink)) / h
-        left_fill = float(np.count_nonzero(left_strip)) / max(left_strip.size, 1)
+def _correct_token(token: str) -> str:
+    """Resolve letter/digit confusions within a single token.
 
-        if left_continuity > 0.88 and left_fill > 0.55:
-            return 'D'
-        elif char == 'D':
-            return 'O'
-        # If char is '0' or 'O' and left is NOT straight, keep as-is
+    Only acts when the token's *other* characters are unambiguous and agree.
+    A token of purely ambiguous characters is left alone -- there is no
+    evidence either way, and guessing is what the old heuristic did wrong.
+    """
+    if len(token) < 2:
+        return token
 
-    # ------------------------------------------------------------------
-    #  A vs B
-    # ------------------------------------------------------------------
-    if char in ('A', 'B'):
-        top_quarter = glyph[: h // 4, :]
-        bot_quarter = glyph[3 * h // 4 :, :]
-        top_ink_cols = np.any(top_quarter > 0, axis=0)
-        bot_ink_cols = np.any(bot_quarter > 0, axis=0)
-        top_span = float(np.count_nonzero(top_ink_cols)) / max(w, 1)
-        bot_span = float(np.count_nonzero(bot_ink_cols)) / max(w, 1)
+    # Count evidence from characters that cannot be confused.
+    digits = sum(1 for c in token if c.isdigit() and c not in _TO_LETTER)
+    letters = sum(1 for c in token if c.isalpha() and c not in _TO_DIGIT)
 
-        if top_span < bot_span * 0.78:
-            return 'A'
-        elif char == 'A' and top_span > bot_span * 0.88:
-            return 'B'
+    if digits >= 1 and letters == 0:
+        return _map_after_first(token, _TO_DIGIT)
 
-    # ------------------------------------------------------------------
-    #  B vs 8
-    # ------------------------------------------------------------------
-    if char in ('B', '8'):
-        # B has a solid vertical bar on the left (like D).
-        # 8 has curves on both sides — the left edge has gaps at the
-        # waist and near corners.
-        left_cols = max(2, w // 5)
-        left_strip = glyph[:, :left_cols]
-        rows_with_ink = np.any(left_strip > 0, axis=1)
-        left_continuity = float(np.count_nonzero(rows_with_ink)) / h
-        left_fill = float(np.count_nonzero(left_strip)) / max(left_strip.size, 1)
+    # The digit -> letter direction needs a stronger majority.  Requiring only
+    # "one unambiguous letter and no unambiguous digits" turned C10 into CIO
+    # and A1 into AI.  Demanding that unambiguous letters outnumber everything
+    # else keeps waypoint repairs (L0RNI -> LORNI) without touching short
+    # letter+number identifiers.
+    if letters >= 1 and digits == 0 and letters > len(token) / 2:
+        return _map_after_first(token, _TO_LETTER)
 
-        if left_continuity > 0.85 and left_fill > 0.45:
-            return 'B'
-        elif char == 'B':
-            return '8'
+    # Mixed token.  The MCDU's common shape is a short alphabetic prefix on a
+    # numeric body -- N0450 (speed), M.78 (mach), FL350 (level).  When the
+    # body is unambiguously numeric, correct it without touching the prefix.
+    head_len = 0
+    while head_len < len(token) and token[head_len].isalpha():
+        head_len += 1
+    if 1 <= head_len <= 2 and head_len < len(token):
+        head, tail = token[:head_len], token[head_len:]
+        tail_digits = sum(1 for c in tail if c.isdigit() and c not in _TO_LETTER)
+        tail_letters = sum(1 for c in tail if c.isalpha() and c not in _TO_DIGIT)
+        if tail_digits >= 1 and tail_letters == 0:
+            return head + _map_after_first(tail, _TO_DIGIT)
 
-    # ------------------------------------------------------------------
-    #  ] vs 1
-    # ------------------------------------------------------------------
-    if char in ('1', ']'):
-        aspect = w / max(h, 1)
-        if aspect < 0.25:
-            # Very narrow — definitely 1, not ]
-            return '1'
-        # ] has a solid right-edge vertical bar running the full height,
-        # with ink in the rightmost columns on nearly every row.
-        # 1 (even with serifs) has its vertical stroke more centred.
-        right_cols = max(2, w // 5)
-        right_strip = glyph[:, -right_cols:]
-        right_rows = np.any(right_strip > 0, axis=1)
-        right_continuity = float(np.count_nonzero(right_rows)) / h
+    return token
 
-        # Also check horizontal centre of mass: ] has it shifted right,
-        # 1 has it near the centre.
-        col_ink = np.sum(glyph > 0, axis=0).astype(float)
-        total_ink = col_ink.sum()
-        if total_ink > 0:
-            com_x = float(np.dot(np.arange(w), col_ink)) / total_ink
-            com_ratio = com_x / max(w - 1, 1)  # 0=left, 1=right
+
+def _correct_row_context(text: str) -> str:
+    """Apply :func:`_correct_token` to every whitespace-separated token."""
+    out = []
+    token = []
+    for char in text:
+        if char in _NEUTRAL:
+            if token:
+                out.append(_correct_token("".join(token)))
+                token = []
+            out.append(char)
         else:
-            com_ratio = 0.5
-
-        # ] : right continuity ~1.0 and COM shifted right (> 0.55)
-        # 1 : COM near centre (0.35–0.55) even with serifs
-        if right_continuity > 0.85 and com_ratio > 0.55:
-            # Also verify the left side is mostly empty in the middle
-            mid_left = glyph[h // 3 : 2 * h // 3, : max(1, w // 3)]
-            mid_left_fill = float(np.count_nonzero(mid_left)) / max(mid_left.size, 1)
-            if mid_left_fill < 0.20:
-                return ']'
-        return '1'
-
-    # ------------------------------------------------------------------
-    #  I vs / (and 1)
-    # ------------------------------------------------------------------
-    if char in ('I', '/'):
-        # / has a strong diagonal: top-right ink, bottom-left ink.
-        # I is vertically symmetric: ink centred on every row.
-        if h > 3 and w > 3:
-            tr = np.count_nonzero(glyph[: h // 2, w // 2 :])
-            bl = np.count_nonzero(glyph[h // 2 :, : w // 2])
-            tl = np.count_nonzero(glyph[: h // 2, : w // 2])
-            br = np.count_nonzero(glyph[h // 2 :, w // 2 :])
-            diag_score = (tr + bl) / max(tl + br + 1, 1)
-            if diag_score > 2.0:
-                return '/'
-            else:
-                return 'I'
-
-    # ------------------------------------------------------------------
-    #  C vs G
-    # ------------------------------------------------------------------
-    if char in ('C', 'G'):
-        # G has an inward horizontal crossbar on the right side at
-        # mid-height.  C is open on the right with no ink in that zone.
-        # Measure ink density in the right half of the middle third.
-        mid_top = h // 3
-        mid_bot = 2 * h // 3
-        mid_right = glyph[mid_top:mid_bot, w // 2:]
-        right_fill = float(np.count_nonzero(mid_right)) / max(mid_right.size, 1)
-        if right_fill > 0.20:
-            return 'G'
-        elif char == 'G':
-            return 'C'
-
-    return char
+            token.append(char)
+    if token:
+        out.append(_correct_token("".join(token)))
+    return "".join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +200,11 @@ class TemplateMatcher:
     MATCH_THRESHOLD = 0.85     # min NCC score to accept
     MAX_TEMPLATES = 5          # max variants stored per character
     CONSENSUS_MIN = 2          # min votes to promote a candidate template
+
+    #: Bumped whenever the normalisation changes shape-compatibility.
+    #: Templates saved under an older format are discarded on load rather
+    #: than silently compared against glyphs normalised a different way.
+    FORMAT_VERSION = 2
 
     #: Where learned glyphs are persisted when no explicit path is given.
     DEFAULT_TEMPLATE_PATH = (
@@ -327,10 +284,6 @@ class TemplateMatcher:
         if len(char) != 1:
             return
 
-        # Correct confusable pairs BEFORE learning so templates are
-        # labelled correctly from the start.
-        char = _disambiguate_confusables(cell_binary, char)
-
         glyph = self._extract_glyph(cell_binary)
         if glyph is None:
             return
@@ -389,7 +342,7 @@ class TemplateMatcher:
             return
         try:
             self._template_path.parent.mkdir(parents=True, exist_ok=True)
-            data = {}
+            data = {"__format__": np.array([self.FORMAT_VERSION])}
             for char, templates in self._templates.items():
                 # Use hex-encoded UTF-8 to handle multi-character keys
                 # (e.g. "<>" from OCR) as well as single characters.
@@ -410,7 +363,20 @@ class TemplateMatcher:
             return
         try:
             data = np.load(str(self._template_path))
+
+            stored_format = int(data["__format__"][0]) if "__format__" in data.files else 1
+            if stored_format != self.FORMAT_VERSION:
+                logger.warning(
+                    "Discarding templates from %s: saved in format v%d, this "
+                    "build normalises glyphs differently (v%d). They will be "
+                    "relearned on the next warmup.",
+                    self._template_path, stored_format, self.FORMAT_VERSION,
+                )
+                return
+
             for key in data.files:
+                if key == "__format__":
+                    continue
                 prefix = key.split("_")[0]
                 if prefix.startswith("h"):
                     # New format: hex-encoded UTF-8
@@ -433,8 +399,30 @@ class TemplateMatcher:
     # ----- helpers -------------------------------------------------------
 
     def _normalize(self, glyph: np.ndarray) -> np.ndarray:
-        resized = cv2.resize(glyph, self.NORM_SIZE, interpolation=cv2.INTER_AREA)
-        _, binary = cv2.threshold(resized, 127, 255, cv2.THRESH_BINARY)
+        """Scale a glyph into NORM_SIZE, preserving its aspect ratio.
+
+        Stretching each glyph to fill the box destroyed the one feature that
+        separates the thin symbols: a dash, a period, an underscore and a
+        solid block all became the same all-white rectangle and matched each
+        other with NCC 1.0.  Scaling by the smaller factor and centring the
+        result on a blank canvas keeps them distinct.
+        """
+        target_w, target_h = self.NORM_SIZE
+        h, w = glyph.shape[:2]
+        if w < 1 or h < 1:
+            return np.zeros((target_h, target_w), dtype=np.uint8)
+
+        scale = min(target_w / w, target_h / h)
+        new_w = max(1, int(round(w * scale)))
+        new_h = max(1, int(round(h * scale)))
+        resized = cv2.resize(glyph, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        canvas = np.zeros((target_h, target_w), dtype=np.uint8)
+        y0 = (target_h - new_h) // 2
+        x0 = (target_w - new_w) // 2
+        canvas[y0:y0 + new_h, x0:x0 + new_w] = resized
+
+        _, binary = cv2.threshold(canvas, 127, 255, cv2.THRESH_BINARY)
         return binary
 
     @staticmethod
@@ -443,7 +431,9 @@ class TemplateMatcher:
         if coords is None:
             return None
         x, y, w, h = cv2.boundingRect(coords)
-        if w < 2 or h < 2:
+        # A hyphen renders as few as 6x1 px in a 20x24 cell.  Requiring 2px
+        # in both axes silently discarded every dash on the display.
+        if w < 1 or h < 1:
             return None
         # 1-px padding so glyphs at slightly different positions within
         # the cell normalise to a consistent shape after resize.
@@ -852,7 +842,8 @@ class MCDUParser:
 
             glyph_w = x_max - x_min
             glyph_h = y_max - y_min
-            if glyph_w < 2 or glyph_h < 2:
+            # Dashes are legitimately 1px tall; see _extract_glyph.
+            if glyph_w < 1 or glyph_h < 1:
                 return None
 
             aspect = glyph_w / max(glyph_h, 1)
@@ -941,6 +932,28 @@ class MCDUParser:
         except Exception as exc:
             logger.debug("Contour detection error: %s", exc)
             return None
+
+    # ------------------------------------------------------------------
+    #  Context corrections
+    # ------------------------------------------------------------------
+    def _apply_context_corrections(self, message_data: List) -> None:
+        """Fix letter/digit confusions in place, one row at a time.
+
+        Applied after assembly so each character is judged against the token
+        it ends up in rather than in isolation.
+        """
+        for row in range(self.rows):
+            base = row * self.columns
+            cells = message_data[base:base + self.columns]
+            if len(cells) < self.columns:
+                break
+            text = "".join(c[0] if c else " " for c in cells)
+            corrected = _correct_row_context(text)
+            if corrected == text:
+                continue
+            for i, char in enumerate(corrected):
+                if cells[i] and cells[i][0] != char:
+                    cells[i][0] = char
 
     # ------------------------------------------------------------------
     #  Main entry point
@@ -1212,17 +1225,6 @@ class MCDUParser:
                 if not char:
                     char = " "
 
-                # Structural correction for confusable pairs, applied to
-                # OCR and contour output only.  A confirmed template match
-                # is trusted: its label was already disambiguated when the
-                # template was learned, and re-deciding it here on every
-                # frame would cap recognition accuracy at the accuracy of
-                # the heuristic — learning could never correct a glyph the
-                # heuristic reads wrong.
-                if char.strip() and (row, col) not in template_results:
-                    cell_bin_check = self._preprocess_cell(cell_img)
-                    char = _disambiguate_confusables(cell_bin_check, char)
-
                 # Learn ONLY from EasyOCR results (not contour fallbacks).
                 # Contour detection is intentionally conservative for
                 # symbols only; learning from it causes letters like T, A, B
@@ -1236,6 +1238,9 @@ class MCDUParser:
                 color = self.detect_color(cell_img)
                 size = 1 if self.is_small_font(row) else 0
                 message_data.append([char, color, size])
+
+        # Resolve letter/digit confusions using each row's own token structure.
+        self._apply_context_corrections(message_data)
 
         # Persist templates periodically
         if matcher._dirty:

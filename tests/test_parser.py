@@ -453,13 +453,25 @@ class TestTemplateAuthority(unittest.TestCase):
         self.mod._template_matcher = self._saved_matcher
         self._tmpdir.cleanup()
 
-    def test_heuristic_still_disagrees_with_the_label(self):
-        """Guard: the premise of the test below actually holds."""
-        from mcdu_parser import _disambiguate_confusables
-        self.assertEqual(
-            _disambiguate_confusables(self._block_cell(), "O"), "D",
-            "premise broken — the heuristic no longer rewrites this glyph",
-        )
+    def test_learn_preserves_the_taught_label(self):
+        """learn() must store the label it was given, not a guess about it.
+
+        A geometry heuristic used to run inside learn() and relabel glyphs by
+        stroke shape. It read this block as 'D', so teaching '0' silently
+        stored a 'D' template and every future zero came back as a D.
+        """
+        self.matcher.learn("0", self._block_cell(), confidence=1.0)
+        self.matcher.learn("0", self._block_cell(), confidence=1.0)
+        self.assertIn("0", self.matcher._templates,
+                      "the taught label was rewritten during learn()")
+        self.assertNotIn("D", self.matcher._templates)
+
+    def test_taught_label_survives_recognition(self):
+        self.matcher.learn("0", self._block_cell(), confidence=1.0)
+        self.matcher.learn("0", self._block_cell(), confidence=1.0)
+        result = self.matcher.recognize(self._block_cell())
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "0")
 
     def test_template_label_survives_parse_grid(self):
         """The committed label wins over what the heuristic would decide."""
