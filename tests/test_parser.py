@@ -121,6 +121,7 @@ class TestTemplateMatcher(unittest.TestCase):
         matcher = TemplateMatcher()
         glyph = self._make_glyph(65)  # 'A' pattern
         matcher.learn("A", glyph, confidence=1.0)
+        matcher.learn("A", glyph, confidence=1.0)
         result = matcher.recognize(glyph)
         self.assertIsNotNone(result)
         self.assertEqual(result[0], "A")
@@ -143,7 +144,7 @@ class TestTemplateMatcher(unittest.TestCase):
         glyph = self._make_glyph(68)
         matcher.learn("D", glyph)
         matcher.learn("D", glyph)  # exact duplicate
-        self.assertEqual(len(matcher._templates.get("D", [])), 1)
+        self.assertEqual(matcher.template_count, 1)
 
     def test_save_and_load(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -152,6 +153,8 @@ class TestTemplateMatcher(unittest.TestCase):
             glyph_a = self._make_glyph(65)
             glyph_b = self._make_glyph(66)
             matcher.learn("A", glyph_a)
+            matcher.learn("A", glyph_a)
+            matcher.learn("B", glyph_b)
             matcher.learn("B", glyph_b)
             matcher.save()
 
@@ -165,6 +168,7 @@ class TestTemplateMatcher(unittest.TestCase):
         matcher = TemplateMatcher()
         glyph = self._make_glyph(69)
         matcher.learn("E", glyph)
+        matcher.learn("E", glyph)
         # Second recognition should hit hash cache
         r1 = matcher.recognize(glyph)
         r2 = matcher.recognize(glyph)
@@ -177,7 +181,7 @@ class TestTemplateMatcher(unittest.TestCase):
             glyph = self._make_glyph(70 + i * 100)
             matcher.learn("X", glyph)
         self.assertLessEqual(
-            len(matcher._templates.get("X", [])),
+            matcher.template_count,
             TemplateMatcher.MAX_TEMPLATES
         )
 
