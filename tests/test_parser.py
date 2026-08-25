@@ -268,3 +268,110 @@ class TestGuiFrozenPathLogic(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestRowCacheScoping(unittest.TestCase):
+    """Regression tests for the captain/co-pilot row-cache collision.
+
+    The row-level OCR caches used to be keyed by row index alone.  Because
+    both MCDUs are parsed in the same process, each display was served the
+    other's cached OCR results.  They are now namespaced by ``source_id``.
+    """
+
+    def setUp(self):
+        import mcdu_parser
+        self.mod = mcdu_parser
+
+        # Isolate the module-level caches for the duration of the test.
+        self._saved_imgs = dict(mcdu_parser._prev_row_imgs)
+        self._saved_ocr = dict(mcdu_parser._prev_row_ocr)
+        mcdu_parser._prev_row_imgs.clear()
+        mcdu_parser._prev_row_ocr.clear()
+
+        # parse_grid() short-circuits to a contour-only path when there is
+        # no OCR engine *and* no templates.  Seed one template so the
+        # caching path under test is actually reached, and redirect saves
+        # to a temp dir so the repo's templates/ is left alone.
+        self.matcher = mcdu_parser._get_template_matcher()
+        self._saved_path = self.matcher._template_path
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.matcher._template_path = Path(self._tmpdir.name) / "t.npz"
+        self._seeded = self.matcher.template_count == 0
+        if self._seeded:
+            self.matcher.learn("A", self._seed_glyph())
+            self.matcher.learn("A", self._seed_glyph())
+
+        # 24x14 grid at 20 px per cell.  Row 3, columns 0-9 carry a glyph
+        # whose normalised form matches the seeded template, so the cells
+        # are recognised and the row reaches the caching path under test.
+        self.image = np.zeros((280, 480, 3), dtype=np.uint8)
+        for col in range(10):
+            x = col * 20
+            self.image[65:75, x + 5:x + 15, :] = 220
+
+    @staticmethod
+    def _seed_glyph():
+        """A centred 10x10 block — matches the cells drawn in setUp."""
+        glyph = np.zeros((20, 20), dtype=np.uint8)
+        glyph[5:15, 5:15] = 255
+        return glyph
+
+    def tearDown(self):
+        self.mod._prev_row_imgs.clear()
+        self.mod._prev_row_ocr.clear()
+        self.mod._prev_row_imgs.update(self._saved_imgs)
+        self.mod._prev_row_ocr.update(self._saved_ocr)
+        if self._seeded:
+            self.matcher.reset()
+        self.matcher._template_path = self._saved_path
+        self._tmpdir.cleanup()
+
+    def test_cache_keys_are_namespaced_by_source(self):
+        parser = MCDUParser(self.image, source_id="captain")
+        parser.parse_grid()
+        self.assertTrue(self.mod._prev_row_imgs, "expected rows to be cached")
+        for key in self.mod._prev_row_imgs:
+            self.assertIsInstance(key, tuple)
+            self.assertEqual(key[0], "captain")
+
+    def test_two_sources_do_not_share_entries(self):
+        MCDUParser(self.image, source_id="captain").parse_grid()
+        MCDUParser(self.image, source_id="copilot").parse_grid()
+        sources = {key[0] for key in self.mod._prev_row_imgs}
+        self.assertEqual(sources, {"captain", "copilot"})
+
+    def test_copilot_does_not_inherit_captain_cached_ocr(self):
+        """The core regression: identical frames must not cross-contaminate."""
+        # Prime the captain's cache with a sentinel character that could
+        # never come out of parsing this image.  Seed it under *both* the
+        # namespaced key and the bare row index, so this test reproduces
+        # the collision whichever keying the implementation uses — that is
+        # what makes it a regression test rather than a tautology.
+        for row in range(14):
+            row_img = self.image[row * 20:(row + 1) * 20, :].copy()
+            for key in (("captain", row), row):
+                self.mod._prev_row_imgs[key] = row_img
+                self.mod._prev_row_ocr[key] = [("Z", 10.0)]
+
+        # The co-pilot sees a pixel-identical frame.  Under the old keying
+        # its rows matched the captain's cache and it emitted the captain's
+        # characters instead of parsing its own.
+        result = MCDUParser(self.image, source_id="copilot").parse_grid()
+
+        emitted = {cell[0] for cell in result if cell}
+        self.assertNotIn(
+            "Z", emitted,
+            "co-pilot inherited the captain's cached OCR result",
+        )
+
+    def test_same_source_still_uses_its_cache(self):
+        """Namespacing must not defeat caching for a single source."""
+        MCDUParser(self.image, source_id="captain").parse_grid()
+        cached_before = dict(self.mod._prev_row_ocr)
+        # An identical second frame should be served from cache, leaving the
+        # stored entries untouched.
+        MCDUParser(self.image, source_id="captain").parse_grid()
+        self.assertEqual(
+            set(cached_before), set(self.mod._prev_row_ocr),
+            "second identical frame changed the cache key set",
+        )

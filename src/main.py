@@ -138,7 +138,8 @@ class MCDUScraper:
                         parser = MCDUParser(
                             img,
                             columns=Config.CDU_COLUMNS,
-                            rows=Config.CDU_ROWS
+                            rows=Config.CDU_ROWS,
+                            source_id=name,
                         )
                         display_data = parser.parse_grid()
                         

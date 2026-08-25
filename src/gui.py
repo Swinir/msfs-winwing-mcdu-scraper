@@ -429,7 +429,8 @@ class MCDUScraperGUI:
                         parser = MCDUParser(
                             img,
                             columns=Config.CDU_COLUMNS,
-                            rows=Config.CDU_ROWS
+                            rows=Config.CDU_ROWS,
+                            source_id="gui",
                         )
                         display_data = parser.parse_grid()
                         _parse_ms = (_time.perf_counter() - _t0) * 1000

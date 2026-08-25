@@ -221,9 +221,13 @@ def _disambiguate_confusables(cell_binary: np.ndarray, char: str) -> str:
 
 # ---------------------------------------------------------------------------
 #  Row-level OCR cache  (persists across MCDUParser instances)
+#
+#  Keyed by ``(source_id, row)``.  The captain and co-pilot MCDUs are parsed
+#  in the same process, so keying by row alone made them overwrite each
+#  other's entries — each display would be served the other's cached OCR.
 # ---------------------------------------------------------------------------
-_prev_row_imgs: Dict[int, np.ndarray] = {}
-_prev_row_ocr: Dict[int, list] = {}
+_prev_row_imgs: Dict[Tuple[str, int], np.ndarray] = {}
+_prev_row_ocr: Dict[Tuple[str, int], list] = {}
 _ROW_CHANGE_MSE = 5.0
 
 
@@ -533,9 +537,14 @@ class MCDUParser:
     MIN_INK_RATIO = 0.008
 
     def __init__(self, image: np.ndarray,
-                 columns: int = 24, rows: int = 14) -> None:
+                 columns: int = 24, rows: int = 14,
+                 source_id: str = "default") -> None:
         self.columns = columns
         self.rows = rows
+        # Namespaces the row-level OCR caches.  Every capture source
+        # (captain, co-pilot, ...) must pass a distinct id, otherwise they
+        # share cache entries and serve each other stale rows.
+        self.source_id = source_id
 
         # Snap to exact multiples so every cell has identical pixel size
         target_w = (image.shape[1] // columns) * columns
@@ -969,14 +978,15 @@ class MCDUParser:
 
         for row in non_empty_rows:
             rim = row_images[row]
-            if row in _prev_row_imgs:
-                prev = _prev_row_imgs[row]
+            cache_key = (self.source_id, row)
+            if cache_key in _prev_row_imgs:
+                prev = _prev_row_imgs[cache_key]
                 if prev.shape == rim.shape:
                     mse = float(np.mean(
                         (rim.astype(np.float32) - prev.astype(np.float32)) ** 2
                     ))
                     if mse < _ROW_CHANGE_MSE:
-                        cached_ocr[row] = _prev_row_ocr.get(row, [])
+                        cached_ocr[row] = _prev_row_ocr.get(cache_key, [])
                         continue
             changed_rows.append(row)
 
@@ -1097,8 +1107,8 @@ class MCDUParser:
                             cx = col * self.cell_width + self.cell_width / 2
                             row_chars.append((best, cx))
                     ocr_results[row] = row_chars
-                    _prev_row_imgs[row] = row_images[row].copy()
-                    _prev_row_ocr[row] = row_chars
+                    _prev_row_imgs[(self.source_id, row)] = row_images[row].copy()
+                    _prev_row_ocr[(self.source_id, row)] = row_chars
 
                 matcher._warmup_complete = True
                 logger.info(
@@ -1112,8 +1122,8 @@ class MCDUParser:
                 for row in unmatched_rows:
                     result = full.get(row, [])
                     ocr_results[row] = result
-                    _prev_row_imgs[row] = row_images[row].copy()
-                    _prev_row_ocr[row] = result
+                    _prev_row_imgs[(self.source_id, row)] = row_images[row].copy()
+                    _prev_row_ocr[(self.source_id, row)] = result
             else:
                 for row in unmatched_rows:
                     is_large = not self.is_small_font(row)
@@ -1121,8 +1131,8 @@ class MCDUParser:
                         row_images[row], large_font=is_large,
                     )
                     ocr_results[row] = result
-                    _prev_row_imgs[row] = row_images[row].copy()
-                    _prev_row_ocr[row] = result
+                    _prev_row_imgs[(self.source_id, row)] = row_images[row].copy()
+                    _prev_row_ocr[(self.source_id, row)] = result
 
         # Also cache rows that were fully template-matched
         for row in changed_rows:
@@ -1134,8 +1144,8 @@ class MCDUParser:
                         cx = col * self.cell_width + self.cell_width / 2
                         chars.append((template_results[(row, col)], cx))
                 ocr_results[row] = chars
-                _prev_row_imgs[row] = row_images[row].copy()
-                _prev_row_ocr[row] = chars
+                _prev_row_imgs[(self.source_id, row)] = row_images[row].copy()
+                _prev_row_ocr[(self.source_id, row)] = chars
 
         n_cached = len(cached_ocr)
         n_template = len(changed_rows) - len(unmatched_rows)

@@ -8,7 +8,7 @@ each one is fixed on `fixes/audit-and-qt-migration`.
 
 ## #1 — Row OCR caches collide when both MCDUs are enabled
 
-**Type:** bug · **Severity:** high · **Status:** open
+**Type:** bug · **Severity:** high · **Status:** FIXED
 
 `_prev_row_imgs` and `_prev_row_ocr` in `src/mcdu_parser.py` are module-level
 dicts keyed by row index alone:
