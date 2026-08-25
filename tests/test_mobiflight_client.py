@@ -1,0 +1,89 @@
+"""
+Unit tests for the MobiFlight CDU display-data sanitiser.
+"""
+
+import unittest
+from pathlib import Path
+import sys
+
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+
+from mobiflight_client import (
+    sanitise_display_data,
+    _CDU_SAFE_CHARS,
+    _CDU_CHAR_MAP,
+)
+
+
+class TestSanitiseDisplayData(unittest.TestCase):
+    """Characters must be mapped to renderable glyphs without changing meaning."""
+
+    def test_empty_cells_preserved(self):
+        self.assertEqual(sanitise_display_data([[], [], []]), [[], [], []])
+
+    def test_safe_chars_pass_through(self):
+        data = [["A", "w", 0], ["7", "c", 1], ["/", "g", 0]]
+        self.assertEqual(sanitise_display_data(data), data)
+
+    def test_colour_and_size_preserved(self):
+        result = sanitise_display_data([["Q", "m", 1]])
+        self.assertEqual(result[0][1], "m")
+        self.assertEqual(result[0][2], 1)
+
+    def test_plus_is_not_turned_into_minus(self):
+        """Regression: '+' folded onto '-' inverted the sign of real values."""
+        result = sanitise_display_data([["+", "g", 0]])
+        self.assertNotEqual(
+            result[0][0], "-",
+            "'+' must never become '-' — that inverts temperature and V/S values",
+        )
+
+    def test_unsupported_char_becomes_space(self):
+        result = sanitise_display_data([["é", "w", 0]])
+        self.assertEqual(result[0][0], " ")
+
+    def test_multi_char_takes_first(self):
+        result = sanitise_display_data([["AB", "w", 0]])
+        self.assertEqual(result[0][0], "A")
+
+    def test_angle_brackets_become_arrows(self):
+        result = sanitise_display_data([["<", "w", 0], [">", "w", 0]])
+        self.assertEqual(result[0][0], "←")
+        self.assertEqual(result[1][0], "→")
+
+    def test_parens_become_brackets(self):
+        result = sanitise_display_data([["(", "w", 0], [")", "w", 0]])
+        self.assertEqual(result[0][0], "[")
+        self.assertEqual(result[1][0], "]")
+
+    def test_output_length_matches_input(self):
+        data = [[] if i % 2 else ["X", "w", 0] for i in range(336)]
+        self.assertEqual(len(sanitise_display_data(data)), 336)
+
+    def test_every_output_char_is_renderable(self):
+        """No mapping may produce a glyph outside the safe set."""
+        data = [[ch, "w", 0] for ch in
+                "ABZ019 .-/<>[]()+*:_~=&#@éü☐"]
+        for cell in sanitise_display_data(data):
+            self.assertIn(
+                cell[0], _CDU_SAFE_CHARS,
+                f"sanitiser emitted unrenderable glyph {cell[0]!r}",
+            )
+
+    def test_char_map_targets_are_all_safe(self):
+        """Every value in _CDU_CHAR_MAP must itself be renderable."""
+        for src, dst in _CDU_CHAR_MAP.items():
+            self.assertIn(
+                dst, _CDU_SAFE_CHARS,
+                f"_CDU_CHAR_MAP maps {src!r} to unrenderable {dst!r}",
+            )
+
+    def test_does_not_mutate_input(self):
+        data = [["(", "w", 0]]
+        sanitise_display_data(data)
+        self.assertEqual(data[0][0], "(")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -34,7 +34,13 @@ _CDU_CHAR_MAP = {
     '(': '[',
     ')': ']',
     '*': '.',
-    '+': '-',
+    # '+' must NOT be mapped to '-'.  The MCDU shows '+' in temperature and
+    # vertical-speed fields, and folding it onto '-' inverts the sign — the
+    # display would read -15 for a real +15.  Dropping the glyph is wrong but
+    # obviously wrong; inverting it is wrong and looks correct.
+    # TODO: verify against real hardware whether AirbusThales renders '+'.
+    # If it does, remove this entry and add '+' to _CDU_SAFE_CHARS instead.
+    '+': ' ',
     ':': '.',
     '_': '-',
     '~': '-',
@@ -42,6 +48,39 @@ _CDU_CHAR_MAP = {
     '<': '\u2190',   # ← left arrow (MCDU arrow indicator)
     '>': '\u2192',   # → right arrow (MCDU arrow indicator)
 }
+
+
+def sanitise_display_data(display_data: list) -> list:
+    """Map a 336-cell display grid onto glyphs the CDU font can render.
+
+    Any character that is neither in ``_CDU_CHAR_MAP`` nor already in
+    ``_CDU_SAFE_CHARS`` becomes a space, so the CDU never receives an
+    unsupported glyph (which can freeze the display).
+
+    Args:
+        display_data: List of elements, each either ``[]`` or
+            ``[char, colour, size]``.
+
+    Returns:
+        A new list of the same length with every character sanitised.
+    """
+    sanitised = []
+    for cell in display_data:
+        if not cell:
+            sanitised.append([])
+            continue
+        char = cell[0]
+        # Multi-char strings from contour fallback (e.g. "<>", "^v")
+        # — take first character only.
+        if len(char) > 1:
+            char = char[0]
+        # Map to CDU-safe equivalent
+        if char in _CDU_CHAR_MAP:
+            char = _CDU_CHAR_MAP[char]
+        elif char not in _CDU_SAFE_CHARS:
+            char = ' '
+        sanitised.append([char, cell[1], cell[2]])
+    return sanitised
 
 
 class MobiFlightClient:
@@ -171,22 +210,7 @@ class MobiFlightClient:
         Args:
             display_data: List of 336 elements, each either [] or [char, color, size]
         """
-        sanitised = []
-        for cell in display_data:
-            if not cell:
-                sanitised.append([])
-                continue
-            char = cell[0]
-            # Multi-char strings from contour fallback (e.g. "<>", "^v")
-            # — take first character only.
-            if len(char) > 1:
-                char = char[0]
-            # Map to CDU-safe equivalent
-            if char in _CDU_CHAR_MAP:
-                char = _CDU_CHAR_MAP[char]
-            elif char not in _CDU_SAFE_CHARS:
-                char = ' '
-            sanitised.append([char, cell[1], cell[2]])
+        sanitised = sanitise_display_data(display_data)
 
         non_empty = sum(1 for cell in sanitised if cell)
         logger.debug(f"Sending display data: {non_empty}/{len(sanitised)} non-empty cells")

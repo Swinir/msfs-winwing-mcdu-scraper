@@ -99,7 +99,7 @@ contour results only, not to high-confidence template hits.
 
 ## #6 — `+` is silently corrupted to `-` before reaching the CDU
 
-**Type:** bug · **Severity:** medium · **Status:** open
+**Type:** bug · **Severity:** medium · **Status:** FIXED
 
 `_CDU_CHAR_MAP` in `src/mobiflight_client.py` contains `'+': '-'`.  The MCDU
 displays `+` in temperature and vertical-speed fields, so `+15` arrives at the
