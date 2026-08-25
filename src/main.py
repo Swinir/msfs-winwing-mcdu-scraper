@@ -79,12 +79,31 @@ class MCDUScraper:
     
     async def _init_mcdu(self, name: str, websocket_uri: str):
         """
-        Initialize MCDU client and window capture
-        
+        Initialize MCDU client and window capture.
+
         Args:
             name: MCDU name ('captain' or 'copilot')
             websocket_uri: WebSocket URI
         """
+        # Resolve window title from config
+        if name == 'captain':
+            window_title = self.config.get_captain_window_title()
+        else:
+            window_title = self.config.get_copilot_window_title()
+
+        if not window_title:
+            raise ValueError(
+                f"No window_title configured for the {name} MCDU. "
+                f"Please set mcdu.{name}.window_title in config.yaml to a "
+                f"substring of the MSFS pop-out window title "
+                f"(e.g. 'Microsoft Flight Simulator')."
+            )
+
+        # Create window capture
+        capture = WindowCapture(window_title=window_title)
+        self.captures[name] = capture
+        logger.info(f"{name.capitalize()} MCDU window capture initialised for '{window_title}'")
+
         # Create MobiFlight client
         client = MobiFlightClient(
             websocket_uri=websocket_uri,
@@ -92,7 +111,7 @@ class MCDUScraper:
             max_retries=self.config.get_max_retries()
         )
         self.clients[name] = client
-        
+
         # Start client connection task
         asyncio.create_task(client.run())
     

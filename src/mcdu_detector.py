@@ -341,11 +341,14 @@ def _detect_via_contours(
 
 def _adaptive_text_threshold(gray: np.ndarray) -> np.ndarray:
     """Threshold *gray* to isolate bright text, adapting to image brightness."""
-    otsu_val, binary = cv2.threshold(gray, 0, 255,
+    # 3×3 median blur removes single-pixel noise (JPEG/capture artefacts)
+    # before Otsu without blurring text edges (median is edge-preserving).
+    blurred = cv2.medianBlur(gray, 3)
+    otsu_val, binary = cv2.threshold(blurred, 0, 255,
                                      cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     # If Otsu picks a very low threshold (image is mostly dark), enforce a minimum
     if otsu_val < 40:
-        _, binary = cv2.threshold(gray, 40, 255, cv2.THRESH_BINARY)
+        _, binary = cv2.threshold(blurred, 40, 255, cv2.THRESH_BINARY)
     return binary
 
 

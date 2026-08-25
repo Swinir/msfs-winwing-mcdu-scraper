@@ -10,6 +10,7 @@ import asyncio
 import threading
 import sys
 import time as _time
+import traceback
 from pathlib import Path
 from typing import Optional
 import queue
@@ -37,7 +38,10 @@ class QueueHandler(logging.Handler):
         self.log_queue = log_queue
     
     def emit(self, record):
-        self.log_queue.put(self.format(record))
+        try:
+            self.log_queue.put_nowait(self.format(record))
+        except queue.Full:
+            pass  # Drop rather than block the capture thread
 
 
 class MCDUScraperGUI:
@@ -56,7 +60,7 @@ class MCDUScraperGUI:
         self.loop = None
         
         # Logging queue
-        self.log_queue = queue.Queue()
+        self.log_queue = queue.Queue(maxsize=1000)
         
         # Setup logging
         self.setup_logging()
@@ -368,7 +372,7 @@ class MCDUScraperGUI:
             fps = self.config.get_capture_fps()
             frame_delay = 1.0 / fps
             frame_count = 0
-            debug_interval = 30  # Log debug info every N frames
+            debug_interval = 150  # Log debug info every N frames (~5 s at 30 FPS)
             _last_frame_img = None
             _last_display_data = None
 
@@ -510,7 +514,6 @@ class MCDUScraperGUI:
                     
                 except Exception as e:
                     self.log(f"Frame error: {e}", level="ERROR")
-                    import traceback
                     self.log(f"[DEBUG] {traceback.format_exc()}", level="ERROR")
                 
                 # Maintain target FPS

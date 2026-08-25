@@ -51,7 +51,7 @@ except ImportError:
 _MCDU_VALID_CHARS = set(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     "0123456789"
-    " +-*/.<>[]()/-.:°"
+    " +-*/.<>[]()-.:°"
 )
 
 _OCR_FIXUPS: Dict[str, str] = {
@@ -83,7 +83,7 @@ def _disambiguate_confusables(cell_binary: np.ndarray, char: str) -> str:
     Called during template *learning* (to prevent poisoning) and
     during *recognition* output (to fix residual errors).
     """
-    if char not in ('D', 'O', '0', 'A', 'B', '1', ']', '8', 'I', '/'):
+    if char not in ('D', 'O', '0', 'A', 'B', '1', ']', '8', 'I', '/', 'C', 'G'):
         return char
 
     coords = cv2.findNonZero(cell_binary)
@@ -199,6 +199,22 @@ def _disambiguate_confusables(cell_binary: np.ndarray, char: str) -> str:
                 return '/'
             else:
                 return 'I'
+
+    # ------------------------------------------------------------------
+    #  C vs G
+    # ------------------------------------------------------------------
+    if char in ('C', 'G'):
+        # G has an inward horizontal crossbar on the right side at
+        # mid-height.  C is open on the right with no ink in that zone.
+        # Measure ink density in the right half of the middle third.
+        mid_top = h // 3
+        mid_bot = 2 * h // 3
+        mid_right = glyph[mid_top:mid_bot, w // 2:]
+        right_fill = float(np.count_nonzero(mid_right)) / max(mid_right.size, 1)
+        if right_fill > 0.20:
+            return 'G'
+        elif char == 'G':
+            return 'C'
 
     return char
 
@@ -409,7 +425,12 @@ class TemplateMatcher:
         x, y, w, h = cv2.boundingRect(coords)
         if w < 2 or h < 2:
             return None
-        return binary[y : y + h, x : x + w]
+        # 1-px padding so glyphs at slightly different positions within
+        # the cell normalise to a consistent shape after resize.
+        H, W = binary.shape
+        pad = 1
+        return binary[max(0, y - pad) : min(H, y + h + pad),
+                      max(0, x - pad) : min(W, x + w + pad)]
 
     @staticmethod
     def _ncc(a: np.ndarray, b: np.ndarray) -> float:
@@ -560,23 +581,44 @@ class MCDUParser:
         if not np.any(bright_mask):
             return "w"
 
-        r, g, b = np.mean(cell[bright_mask], axis=0).astype(int)
+        bright_pixels = cell[bright_mask]
+        # Median is more robust to stray noise/outlier pixels than mean.
+        r = int(np.median(bright_pixels[:, 0]))
+        g = int(np.median(bright_pixels[:, 1]))
+        b = int(np.median(bright_pixels[:, 2]))
 
-        if r > 180 and g > 180 and b > 180:
+        # Convert to HSV (cell images are RGB from PIL/MSS/WGC).
+        # HSV hue cleanly separates MCDU colours independent of display
+        # brightness or gamma settings.
+        pixel_rgb = np.array([[[r, g, b]]], dtype=np.uint8)
+        hsv = cv2.cvtColor(pixel_rgb, cv2.COLOR_RGB2HSV)[0, 0]
+        h_val = int(hsv[0])   # 0–180 in OpenCV scale
+        s_val = int(hsv[1])   # 0–255
+        v_val = int(hsv[2])   # 0–255
+
+        # White / near-white: low saturation, high value
+        if s_val < 50 and v_val > 150:
             return "w"
-        if r < 120 and g > 140 and b > 140:
+        # Cyan  hue ≈ 90° (OpenCV 90)
+        if 80 <= h_val <= 105 and s_val > 80:
             return "c"
-        if r < 120 and g > 140 and b < 120:
+        # Green hue ≈ 60°
+        if 50 <= h_val <= 82 and s_val > 80:
             return "g"
-        if r > 160 and g > 120 and b < 100:
-            return "a"
-        if r > 140 and g < 100 and b > 140:
-            return "m"
-        if r > 140 and g < 100 and b < 100:
-            return "r"
-        if r > 180 and g > 180 and b < 150:
+        # Yellow hue ≈ 30°, high saturation (checked before amber)
+        if 22 <= h_val <= 42 and s_val > 150:
             return "y"
-        if 60 < r < 160 and 60 < g < 160 and 60 < b < 160:
+        # Amber  hue ≈ 15-25° (orange-amber)
+        if 8 <= h_val <= 28 and s_val > 80:
+            return "a"
+        # Red    hue near 0° or 180°
+        if (h_val <= 12 or h_val >= 165) and s_val > 80:
+            return "r"
+        # Magenta hue ≈ 150°
+        if 130 <= h_val <= 165 and s_val > 80:
+            return "m"
+        # Grey: low saturation, moderate value
+        if s_val < 80 and 40 <= v_val <= 200:
             return "e"
         return "w"
 
@@ -604,8 +646,16 @@ class MCDUParser:
     def _preprocess_cell(self, cell: np.ndarray) -> np.ndarray:
         """Convert a colour cell to a clean binary image."""
         gray = np.max(cell, axis=2)
+        # Per-cell Otsu finds the optimal ink/background split.
+        # It degrades when the cell is near-empty (low variance → very low
+        # threshold that passes noise).  Guard: only accept Otsu values in
+        # the range [half the fixed threshold, 220].
         ink_threshold = self.INK_THRESHOLD + self._bg_floor
-        _, binary = cv2.threshold(gray, ink_threshold, 255, cv2.THRESH_BINARY)
+        otsu_val, binary = cv2.threshold(
+            gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )
+        if otsu_val < ink_threshold * 0.5 or otsu_val > 220:
+            _, binary = cv2.threshold(gray, ink_threshold, 255, cv2.THRESH_BINARY)
         # Small morphological close to fill 1-px gaps in the font
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
@@ -619,15 +669,21 @@ class MCDUParser:
         """
         Prepare an image strip for EasyOCR.
 
-        Pipeline: max-channel → binary threshold → invert (dark-on-light) →
+        Pipeline: max-channel → CLAHE (local contrast normalisation) →
+        midpoint binary threshold → invert (dark-on-light) →
         upscale (cubic) → white padding.
 
-        No blur is applied — it was softening thin strokes (like the
-        middle bar of E) and causing misreads (E → P).
+        CLAHE normalises brightness across the strip so dim rows (grey,
+        low-contrast amber) get the same ink/background separation as
+        bright rows, without blurring thin strokes (CLAHE is not a blur).
         """
         gray = np.max(img, axis=2)
-        ink_threshold = self.INK_THRESHOLD + self._bg_floor
-        _, binary = cv2.threshold(gray, ink_threshold, 255, cv2.THRESH_BINARY)
+        # CLAHE: pushes background → 0, text → 255 independently per tile.
+        # clipLimit=2.0 prevents over-amplifying noise in empty regions.
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        gray = clahe.apply(gray)
+        # After CLAHE a fixed midpoint threshold cleanly separates ink/bg.
+        _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
         binary = cv2.bitwise_not(binary)  # dark-on-light for CRNN
 
         upscaled = cv2.resize(
@@ -787,11 +843,15 @@ class MCDUParser:
                 return "."
 
             # --- degree symbol ° ---
+            # A degree symbol is a small circular glyph in the *upper*
+            # portion of the cell (above the text baseline).  A period is
+            # always near the *bottom*.  They share a similar shape so
+            # vertical position is the key discriminator.
             if (glyph_w < cell_w * 0.40 and glyph_h < cell_h * 0.40
                     and fill > 0.20 and y_min < cell_h * 0.30
                     and n_contours <= 2):
                 if 0.20 < fill < 0.65:
-                    return "."
+                    return "°"
 
             # --- dash / minus ---
             if aspect > 2.0 and glyph_h < cell_h * 0.25 and fill > 0.40:
@@ -962,7 +1022,9 @@ class MCDUParser:
                 # Accumulate per-cell votes across ALL rounds
                 cell_all_votes: Dict[Tuple[int, int], Dict[str, int]] = {}
 
+                _stable_rounds = 0  # consecutive rounds with no new templates
                 for rnd in range(WARMUP_ROUNDS):
+                    _prev_count = matcher.template_count
                     for ws in warmup_scales:
                         # Full-image OCR at this scale
                         full = self._ocr_full_image_easyocr(scale=ws)
@@ -1009,6 +1071,19 @@ class MCDUParser:
                         "  Warmup round %d/%d done — %d templates so far",
                         rnd + 1, WARMUP_ROUNDS, matcher.template_count,
                     )
+                    # Stop early when templates have stabilised (no new
+                    # glyphs learned for 2 consecutive rounds).
+                    if matcher.template_count - _prev_count <= 2:
+                        _stable_rounds += 1
+                        if _stable_rounds >= 2:
+                            logger.info(
+                                "  Warmup converged after %d rounds "
+                                "(templates stable at %d).",
+                                rnd + 1, matcher.template_count,
+                            )
+                            break
+                    else:
+                        _stable_rounds = 0
 
                 # Build display results via majority vote across ALL rounds
                 for row in unmatched_rows:

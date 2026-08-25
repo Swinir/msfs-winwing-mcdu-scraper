@@ -1,9 +1,15 @@
 mcdu:
   captain:
     enabled: true
-  
+    # Window title substring used by the CLI to find the MSFS pop-out window.
+    # Use a partial string; matching is case-insensitive.
+    # Run the GUI once and look at the "Window Selection" dropdown to find the right title.
+    # Example: "Microsoft Flight Simulator" or "MCDU"
+    window_title: "Microsoft Flight Simulator"
+
   copilot:
     enabled: false
+    # window_title: "Microsoft Flight Simulator"
 
 mobiflight:
   captain_url: "ws://localhost:8320/winwing/cdu-captain"

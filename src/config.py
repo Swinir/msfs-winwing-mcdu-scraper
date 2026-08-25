@@ -117,12 +117,34 @@ class Config:
         return self.config_data['mcdu'].get('copilot', {}).get('enabled', False)
     
     def get_captain_url(self) -> str:
-        """Get captain WebSocket URL"""
-        return self.config_data['mobiflight']['captain_url']
-    
+        """Get captain WebSocket URL."""
+        url = self.config_data['mobiflight'].get('captain_url')
+        if not url:
+            raise ValueError(
+                "Missing 'mobiflight.captain_url' in config. "
+                "Please set it to the WinWing CDU captain WebSocket URI "
+                "(e.g. ws://localhost:8320/winwing/cdu-captain)."
+            )
+        return url
+
     def get_copilot_url(self) -> str:
-        """Get copilot WebSocket URL"""
-        return self.config_data['mobiflight']['copilot_url']
+        """Get copilot WebSocket URL."""
+        url = self.config_data['mobiflight'].get('copilot_url')
+        if not url:
+            raise ValueError(
+                "Missing 'mobiflight.copilot_url' in config. "
+                "Please set it to the WinWing CDU co-pilot WebSocket URI "
+                "(e.g. ws://localhost:8320/winwing/cdu-co-pilot)."
+            )
+        return url
+
+    def get_captain_window_title(self) -> str:
+        """Get the window title used to locate the captain MCDU capture window."""
+        return self.config_data['mcdu']['captain'].get('window_title', '')
+
+    def get_copilot_window_title(self) -> str:
+        """Get the window title used to locate the copilot MCDU capture window."""
+        return self.config_data['mcdu'].get('copilot', {}).get('window_title', '')
     
     def get_font(self) -> str:
         """Get font name"""
@@ -133,8 +155,9 @@ class Config:
         return self.config_data['mobiflight'].get('max_retries', 3)
     
     def get_capture_fps(self) -> int:
-        """Get capture frame rate"""
-        return self.config_data['performance'].get('capture_fps', 30)
+        """Get capture frame rate, clamped to [1, 120]."""
+        raw = self.config_data['performance'].get('capture_fps', 30)
+        return max(1, min(120, int(raw)))
     
     def get_enable_caching(self) -> bool:
         """Check if caching is enabled"""
