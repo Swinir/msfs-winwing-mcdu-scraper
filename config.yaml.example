@@ -1,49 +1,28 @@
-mcdu:
-  captain:
-    enabled: true
-    # Window title substring used by the CLI to find the MSFS pop-out window.
-    # Use a partial string; matching is case-insensitive.
-    # Run the GUI once and look at the "Window Selection" dropdown to find the right title.
-    # Example: "Microsoft Flight Simulator" or "MCDU"
-    window_title: "Microsoft Flight Simulator"
-
-    # Crop the captured window down to just the MCDU screen.
-    # STRONGLY RECOMMENDED: without it the *whole window* is carved into the
-    # 24x14 character grid, which only works if the window happens to be
-    # exactly the MCDU display.
-    # Coordinates are relative to the captured window's top-left corner.
-    # Easiest way to find them: run the GUI, pick your window, click
-    # "Select Screen Area" (or "Auto Detect"), and copy the reported values.
-    # crop:
-    #   x: 0
-    #   y: 0
-    #   width: 480
-    #   height: 280
-
-  copilot:
-    enabled: false
-    # window_title: "Microsoft Flight Simulator"
-    # crop:
-    #   x: 0
-    #   y: 0
-    #   width: 480
-    #   height: 280
+# Configuration for the MSFS WinWing MCDU Scraper.
+#
+# Which window to capture, and which part of it holds the MCDU screen, are
+# chosen in the GUI - they are not settings. Everything that remains here is
+# about where to send the result and how hard to work.
 
 mobiflight:
+  # Where the MobiFlight WinWing MCDU Connector is listening.
   captain_url: "ws://localhost:8320/winwing/cdu-captain"
+  # Only used when the co-pilot MCDU is enabled under Advanced in the GUI.
   copilot_url: "ws://localhost:8320/winwing/cdu-co-pilot"
+
+  # Font the CDU should load. Must match one of MobiFlight's own font files:
+  # AirbusThales, Boeing or Collins. An unknown name is silently ignored and
+  # whatever font was loaded before stays in place.
   font: "AirbusThales"
+
+  # Consecutive connection failures tolerated at the base 2s retry delay
+  # before reconnects start backing off exponentially, capped at 30s. The
+  # client never gives up - MobiFlight is often simply not running yet.
   max_retries: 3
 
 performance:
   capture_fps: 30
-  # Reuse the previous parse when a frame is nearly identical to the last
-  # one.  Big CPU saving on a static MCDU page; turn off only when debugging.
-  enable_caching: true
 
-# OCR settings (optional — sensible defaults are used if omitted)
-# ocr:
-#   # Template matching threshold (0.0–1.0).  Lower = more permissive.
-#   template_threshold: 0.78
-#   # EasyOCR confidence floor.  Detections below this are discarded.
-#   easyocr_min_confidence: 0.15
+  # Reuse the previous parse when a frame is nearly identical to the last
+  # one. Big CPU saving on a static MCDU page; turn off only when debugging.
+  enable_caching: true

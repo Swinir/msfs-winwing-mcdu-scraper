@@ -61,96 +61,45 @@ Then run the GUI:
 run_gui.bat
 ```
 
-## Using the CLI
+## A second MCDU
 
-The CLI has no window picker, so it needs `config.yaml`:
+Under **Advanced**, tick "Co-Pilot MCDU (second CDU)". It is tucked away
+because almost everyone runs a single CDU.
 
-```bash
-copy config.yaml.example config.yaml
-```
+Pick a second pop-out window and give it its own screen area. The two MCDUs
+run as independent capture pipelines, so neither slows the other down, and
+the co-pilot output goes to `copilot_url` from `config.yaml`.
 
-A minimal working configuration:
+The two must be different windows — the app refuses to start if both are set
+to the same one.
+
+## Configuration
+
+`config.yaml` is optional; the defaults work. It covers only where output
+goes and how hard to work:
 
 ```yaml
-mcdu:
-  captain:
-    enabled: true
-    # Substring of the pop-out window's title, matched case-insensitively.
-    window_title: "Microsoft Flight Simulator"
-    # Which part of that window holds the MCDU screen.
-    crop:
-      x: 120
-      y: 80
-      width: 480
-      height: 280
-
 mobiflight:
   captain_url: "ws://localhost:8320/winwing/cdu-captain"
+  copilot_url: "ws://localhost:8320/winwing/cdu-co-pilot"
   font: "AirbusThales"
 
 performance:
   capture_fps: 30
 ```
 
-**The `crop` block matters.** Without it the entire window is carved into the
-24x14 grid, which only produces sensible output if the window happens to be
-exactly the MCDU screen. The CLI warns when no crop is configured.
-
-Easiest way to find the numbers: run the GUI once, use "Select Screen Area",
-and copy the `X`, `Y`, `W`, `H` values it reports into the `crop` block.
-
-Then:
-
-```bash
-cd src && python main.py
-```
-
-Expected output:
-
-```
-============================================================
-MSFS A330 WinWing MCDU Scraper
-============================================================
-... Configuration loaded successfully
-... Initializing Captain MCDU...
-... Captain MCDU crop region: x=120, y=80, w=480, h=280
-... MobiFlight connected at ws://localhost:8320/winwing/cdu-captain
-... Font set to: AirbusThales
-... Starting capture pipelines...
-... Captain pipeline running at 30 FPS
-```
-
-## Both MCDUs
-
-Enable each one with its own window and crop:
-
-```yaml
-mcdu:
-  captain:
-    enabled: true
-    window_title: "Microsoft Flight Simulator"
-    crop: { x: 120, y: 80, width: 480, height: 280 }
-
-  copilot:
-    enabled: true
-    window_title: "Microsoft Flight Simulator (1)"
-    crop: { x: 120, y: 80, width: 480, height: 280 }
-```
-
-Each runs its own capture pipeline concurrently.
+Which window to capture and which part of it to crop are chosen in the GUI.
 
 ## Troubleshooting
-
-**"No config.yaml found"**
-Copy `config.yaml.example` to `config.yaml`. Only the CLI needs this.
 
 **"WebSocket connection closed" / connection refused**
 Start the MobiFlight WinWing MCDU Connector first. It listens on
 `localhost:8320`. The scraper keeps retrying, backing off as failures repeat.
 
 **Blank or garbled CDU display**
-Almost always the capture area. Use the GUI's "Select Screen Area" and check
-the grid overlay lines up with the characters. For the CLI, check `crop`.
+Almost always the capture area. Use "Select Screen Area" and check that the
+grid overlay lines up with the characters — the boundaries should fall
+between them, not through them.
 
 **"Captured image is nearly all black"**
 The capture backend is not seeing the window content. Try running MSFS in

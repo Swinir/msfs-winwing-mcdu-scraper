@@ -15,8 +15,9 @@ import asyncio
 import logging
 import sys
 import traceback
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 # Add src to path (handle both normal and PyInstaller frozen execution)
 if getattr(sys, 'frozen', False):
@@ -39,6 +40,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -86,19 +88,28 @@ class SignalLogHandler(logging.Handler):
             self.handleError(record)
 
 
+@dataclass
+class McduSpec:
+    """One MCDU to drive: where to capture it and where to send it."""
+
+    name: str
+    capture: object
+    websocket_uri: str
+
+
 class ScraperWorker(QObject):
-    """Runs the capture pipeline on its own thread and event loop."""
+    """Runs one capture pipeline per MCDU on its own thread and event loop."""
 
     finished = Signal()
     failed = Signal(str)
-    connected = Signal()
+    connected = Signal(str)
 
-    def __init__(self, config: Config, capture) -> None:
+    def __init__(self, config: Config, specs: List[McduSpec]) -> None:
         super().__init__()
         self.config = config
-        self.capture = capture
+        self.specs = list(specs)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._pipeline: Optional[MCDUPipeline] = None
+        self._pipelines: List[MCDUPipeline] = []
         self._stopping = False
 
     def start(self) -> None:
@@ -119,27 +130,29 @@ class ScraperWorker(QObject):
             self.finished.emit()
 
     def stop(self) -> None:
-        """Ask the pipeline to stop.  Safe to call from the UI thread."""
+        """Ask every pipeline to stop.  Safe to call from the UI thread."""
         self._stopping = True
-        pipeline, loop = self._pipeline, self._loop
-        if pipeline is not None and loop is not None and loop.is_running():
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return
+        for pipeline in list(self._pipelines):
             loop.call_soon_threadsafe(pipeline.stop)
 
-    async def _run(self) -> None:
+    async def _drive(self, spec: McduSpec) -> None:
+        """Connect one MCDU and run its pipeline until stopped."""
         client = MobiFlightClient(
-            websocket_uri=self.config.get_captain_url(),
+            websocket_uri=spec.websocket_uri,
             font=self.config.get_font(),
             max_retries=self.config.get_max_retries(),
         )
         client_task = asyncio.create_task(client.run())
-
         try:
             await client.connected.wait()
-            self.connected.emit()
+            self.connected.emit(spec.name)
 
-            self._pipeline = MCDUPipeline(
-                name="gui",
-                capture=self.capture,
+            pipeline = MCDUPipeline(
+                name=spec.name,
+                capture=spec.capture,
                 client=client,
                 columns=Config.CDU_COLUMNS,
                 rows=Config.CDU_ROWS,
@@ -148,10 +161,11 @@ class ScraperWorker(QObject):
                     enable_caching=self.config.get_enable_caching(),
                 ),
             )
+            self._pipelines.append(pipeline)
             # stop() may have been called while we were still connecting.
             if self._stopping:
                 return
-            await self._pipeline.run()
+            await pipeline.run()
         finally:
             client_task.cancel()
             try:
@@ -159,6 +173,12 @@ class ScraperWorker(QObject):
             except asyncio.CancelledError:
                 pass
             await client.close()
+
+    async def _run(self) -> None:
+        # Each MCDU gets its own pipeline so one does not throttle the other.
+        # Its name also namespaces the parser's row caches, so the two must
+        # differ -- see the dual-MCDU cache collision in ISSUES.md #1.
+        await asyncio.gather(*(self._drive(spec) for spec in self.specs))
 
 
 class MCDUScraperWindow(QMainWindow):
@@ -170,9 +190,11 @@ class MCDUScraperWindow(QMainWindow):
         self.resize(960, 720)
 
         self.running = False
-        self.capture = None
-        self.crop_region: Optional[tuple] = None
         self.window_list: list = []
+        # Per-MCDU capture state, keyed by name.  'captain' is always
+        # present; 'copilot' only when the user opts in.
+        self.captures: dict = {}
+        self.crop_regions: dict = {"captain": None, "copilot": None}
         self.worker: Optional[ScraperWorker] = None
         self.thread: Optional[QThread] = None
 
@@ -207,6 +229,7 @@ class MCDUScraperWindow(QMainWindow):
         layout.addWidget(title)
 
         layout.addWidget(self._build_window_group())
+        layout.addWidget(self._build_advanced_section())
         layout.addWidget(self._build_control_group())
         layout.addWidget(self._build_log_group(), stretch=1)
 
@@ -229,7 +252,8 @@ class MCDUScraperWindow(QMainWindow):
         grid.addWidget(self.show_all_checkbox, 0, 3)
 
         self.select_area_button = QPushButton("Select Screen Area")
-        self.select_area_button.clicked.connect(self.select_screen_area)
+        self.select_area_button.clicked.connect(
+            lambda: self.select_screen_area("captain"))
         grid.addWidget(self.select_area_button, 1, 1)
 
         self.crop_info_label = QLabel("No crop region set")
@@ -237,6 +261,63 @@ class MCDUScraperWindow(QMainWindow):
 
         grid.setColumnStretch(1, 1)
         return group
+
+    def _build_advanced_section(self) -> QWidget:
+        """Second-MCDU controls, kept out of the way.
+
+        Almost everyone drives a single CDU, so the co-pilot side stays
+        hidden behind a collapsed disclosure rather than sitting on the main
+        surface where it invites a stray click.
+        """
+        container = QWidget()
+        outer = QVBoxLayout(container)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        self.advanced_toggle = QToolButton()
+        self.advanced_toggle.setText("Advanced")
+        self.advanced_toggle.setCheckable(True)
+        self.advanced_toggle.setChecked(False)
+        self.advanced_toggle.setArrowType(Qt.RightArrow)
+        self.advanced_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.advanced_toggle.setAutoRaise(True)
+        self.advanced_toggle.toggled.connect(self._toggle_advanced)
+        outer.addWidget(self.advanced_toggle, alignment=Qt.AlignLeft)
+
+        self.copilot_group = QGroupBox("Co-Pilot MCDU (second CDU)")
+        self.copilot_group.setCheckable(True)
+        self.copilot_group.setChecked(False)
+        self.copilot_group.toggled.connect(self._toggle_copilot)
+        self.copilot_group.setVisible(False)
+
+        grid = QGridLayout(self.copilot_group)
+        grid.addWidget(QLabel("Select Co-Pilot Window:"), 0, 0)
+
+        self.copilot_window_combo = QComboBox()
+        self.copilot_window_combo.setMinimumWidth(420)
+        grid.addWidget(self.copilot_window_combo, 0, 1)
+
+        self.copilot_select_area_button = QPushButton("Select Screen Area")
+        self.copilot_select_area_button.clicked.connect(
+            lambda: self.select_screen_area("copilot"))
+        grid.addWidget(self.copilot_select_area_button, 1, 1)
+
+        self.copilot_crop_info_label = QLabel("No crop region set")
+        grid.addWidget(self.copilot_crop_info_label, 1, 2)
+
+        grid.setColumnStretch(1, 1)
+        outer.addWidget(self.copilot_group)
+        return container
+
+    def _toggle_advanced(self, shown: bool) -> None:
+        self.advanced_toggle.setArrowType(
+            Qt.DownArrow if shown else Qt.RightArrow)
+        self.copilot_group.setVisible(shown)
+
+    def _toggle_copilot(self, enabled: bool) -> None:
+        if enabled and not self.copilot_window_combo.count():
+            self.refresh_windows()
+        if enabled:
+            self.log("Co-Pilot MCDU enabled - select its window and screen area")
 
     def _build_control_group(self) -> QGroupBox:
         group = QGroupBox("Control")
@@ -327,59 +408,123 @@ class MCDUScraperWindow(QMainWindow):
                     filtered = windows[:20]
 
             self.window_list = filtered
-            self.window_combo.clear()
-            self.window_combo.addItems(
-                [f"{title} (HWND: {hwnd})" for hwnd, title in filtered]
-            )
+            labels = [f"{title} (HWND: {hwnd})" for hwnd, title in filtered]
+            for combo in self._window_combos():
+                current = combo.currentIndex()
+                combo.clear()
+                combo.addItems(labels)
+                if 0 <= current < len(labels):
+                    combo.setCurrentIndex(current)
             self.log(f"Found {len(windows)} windows, showing {len(filtered)}")
         except Exception as exc:
             self.log(f"Error refreshing windows: {exc}", "ERROR")
 
-    def _selected_window(self) -> Optional[tuple]:
-        index = self.window_combo.currentIndex()
+    def _window_combos(self) -> List[QComboBox]:
+        combos = [self.window_combo]
+        if getattr(self, "copilot_window_combo", None) is not None:
+            combos.append(self.copilot_window_combo)
+        return combos
+
+    def _combo_for(self, mcdu: str) -> QComboBox:
+        return (self.copilot_window_combo if mcdu == "copilot"
+                else self.window_combo)
+
+    def _selected_window(self, mcdu: str = "captain") -> Optional[tuple]:
+        index = self._combo_for(mcdu).currentIndex()
         if index < 0 or index >= len(self.window_list):
             return None
         return self.window_list[index]
 
-    def select_screen_area(self) -> None:
+    def _copilot_enabled(self) -> bool:
+        return (getattr(self, "copilot_group", None) is not None
+                and self.copilot_group.isChecked())
+
+    def _enabled_mcdus(self) -> List[str]:
+        return ["captain"] + (["copilot"] if self._copilot_enabled() else [])
+
+    def _crop_label_for(self, mcdu: str) -> QLabel:
+        return (self.copilot_crop_info_label if mcdu == "copilot"
+                else self.crop_info_label)
+
+    def select_screen_area(self, mcdu: str = "captain") -> None:
         if not WINDOWS_AVAILABLE:
             QMessageBox.critical(self, "Error",
                                  "Window capture not available on this platform")
             return
 
-        selected = self._selected_window()
+        selected = self._selected_window(mcdu)
         if selected is None:
-            QMessageBox.critical(self, "Error", "Please select a window first")
+            QMessageBox.critical(
+                self, "Error", f"Please select a window for the {mcdu} MCDU first")
             return
 
         hwnd, title = selected
         try:
-            self.log(f"Capturing preview from: {title}")
+            self.log(f"[{mcdu}] Capturing preview from: {title}")
             temp_capture = WindowCapture(window_handle=hwnd)
             try:
                 preview = temp_capture.capture()
             finally:
                 temp_capture.close()
 
-            dialog = RegionSelectorDialog(self, preview, self.crop_region)
+            dialog = RegionSelectorDialog(self, preview,
+                                          self.crop_regions.get(mcdu))
             result = dialog.show()
 
+            label = self._crop_label_for(mcdu)
             if result:
-                self.crop_region = result
+                self.crop_regions[mcdu] = result
                 x, y, w, h = result
-                self.crop_info_label.setText(f"Crop: X={x}, Y={y}, W={w}, H={h}")
-                self.crop_info_label.setStyleSheet("color: green;")
-                self.log(f"Screen area selected: X={x}, Y={y}, W={w}, H={h}")
+                label.setText(f"Crop: X={x}, Y={y}, W={w}, H={h}")
+                label.setStyleSheet("color: green;")
+                self.log(f"[{mcdu}] Screen area selected: "
+                         f"X={x}, Y={y}, W={w}, H={h}")
             else:
-                self.log("Screen area selection cancelled")
+                self.log(f"[{mcdu}] Screen area selection cancelled")
 
         except Exception as exc:
-            self.log(f"Error selecting screen area: {exc}", "ERROR")
+            self.log(f"[{mcdu}] Error selecting screen area: {exc}", "ERROR")
             QMessageBox.critical(self, "Error", f"Failed to capture window: {exc}")
 
     # ------------------------------------------------------------------
     #  Start / stop
     # ------------------------------------------------------------------
+    def _url_for(self, mcdu: str) -> str:
+        return (self.config.get_copilot_url() if mcdu == "copilot"
+                else self.config.get_captain_url())
+
+    def _build_specs(self) -> Optional[List[McduSpec]]:
+        """Open a capture per enabled MCDU.  None if anything is unusable."""
+        specs: List[McduSpec] = []
+        for mcdu in self._enabled_mcdus():
+            selected = self._selected_window(mcdu)
+            if selected is None:
+                QMessageBox.critical(
+                    self, "Error",
+                    f"Please select a window for the {mcdu} MCDU")
+                return None
+
+            hwnd, title = selected
+            crop = self.crop_regions.get(mcdu)
+            self.log(f"[{mcdu}] Starting with window: {title}")
+            capture = WindowCapture(window_handle=hwnd, crop_region=crop)
+            self.captures[mcdu] = capture
+
+            if crop:
+                x, y, w, h = crop
+                self.log(f"[{mcdu}] Using crop region: "
+                         f"X={x}, Y={y}, W={w}, H={h}")
+            else:
+                self.log(
+                    f"[{mcdu}] No crop region set - the whole window will be "
+                    f"carved into the 24x14 grid. Use 'Select Screen Area' if "
+                    f"the output looks wrong.", "WARNING",
+                )
+
+            specs.append(McduSpec(name=mcdu, capture=capture,
+                                  websocket_uri=self._url_for(mcdu)))
+        return specs
+
     def start_scraper(self) -> None:
         if self.running:
             return
@@ -393,46 +538,58 @@ class MCDUScraperWindow(QMainWindow):
                                  "Window capture not available. Please install pywin32.")
             return
 
-        selected = self._selected_window()
-        if selected is None:
-            QMessageBox.critical(self, "Error", "Please select a window to capture")
+        if (self._copilot_enabled()
+                and self._selected_window("captain")
+                == self._selected_window("copilot")):
+            QMessageBox.critical(
+                self, "Error",
+                "The captain and co-pilot MCDUs are set to the same window. "
+                "Pop out a second MCDU and pick it for the co-pilot.")
             return
 
-        hwnd, title = selected
         try:
-            self.log(f"Starting scraper with window: {title}")
-            self.capture = WindowCapture(window_handle=hwnd,
-                                         crop_region=self.crop_region)
-            if self.crop_region:
-                x, y, w, h = self.crop_region
-                self.log(f"Using crop region: X={x}, Y={y}, W={w}, H={h}")
-            else:
-                self.log(
-                    "No crop region set - the whole window will be carved "
-                    "into the 24x14 grid. Use 'Select Screen Area' if the "
-                    "output looks wrong.", "WARNING",
-                )
+            specs = self._build_specs()
         except Exception as exc:
             self.log(f"Error starting scraper: {exc}", "ERROR")
             QMessageBox.critical(self, "Error", f"Failed to start scraper: {exc}")
+            self._release_captures()
+            return
+        if specs is None:
+            self._release_captures()
             return
 
-        self.worker = ScraperWorker(self.config, self.capture)
+        self.worker = ScraperWorker(self.config, specs)
         self.thread = QThread()
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.start)
         self.worker.connected.connect(
-            lambda: self.log("Connected to WinWing CDU")
+            lambda name: self.log(f"[{name}] Connected to WinWing CDU")
         )
         self.worker.failed.connect(self._on_worker_failed)
         self.worker.finished.connect(self._on_worker_finished)
         self.thread.start()
 
         self.running = True
+        self._set_inputs_enabled(False)
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
-        self.status_label.setText("Status: Running")
+        self.status_label.setText(
+            f"Status: Running ({len(specs)} MCDU{'s' if len(specs) > 1 else ''})")
         self.status_label.setStyleSheet("font-weight: bold; color: green;")
+
+    def _set_inputs_enabled(self, enabled: bool) -> None:
+        """Freeze the selection controls while a capture is running."""
+        for widget in (self.window_combo, self.select_area_button,
+                       self.copilot_group, self.show_all_checkbox):
+            widget.setEnabled(enabled)
+
+    def _release_captures(self) -> None:
+        for mcdu, capture in list(self.captures.items()):
+            try:
+                capture.close()
+            except Exception as exc:
+                self.log(f"[{mcdu}] Error closing capture: {exc}", "WARNING")
+        self.captures.clear()
 
     def stop_scraper(self) -> None:
         if not self.running:
@@ -452,14 +609,10 @@ class MCDUScraperWindow(QMainWindow):
             self.thread = None
         self.worker = None
 
-        if self.capture:
-            try:
-                self.capture.close()
-            except Exception as exc:
-                self.log(f"Error closing capture: {exc}", "WARNING")
-            self.capture = None
+        self._release_captures()
 
         self.running = False
+        self._set_inputs_enabled(True)
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.status_label.setText("Status: Stopped")

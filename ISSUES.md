@@ -388,6 +388,40 @@ captures containing several arrows before it is worth attempting.
 
 ---
 
+## #20 — CLI dropped; dual MCDU moved into the GUI
+
+**Type:** refactor · **Severity:** n/a · **Status:** DONE
+
+The command-line front end is gone — `src/main.py`, `run.bat`, `run.sh` and
+its PyInstaller spec.  One front end, one code path.
+
+Dual-MCDU support only existed in the CLI, so it moved into the GUI rather
+than disappearing.  It sits under a collapsed **Advanced** disclosure and a
+separate tick box, since almost everyone runs a single CDU and it should not
+be one stray click away.
+
+Consequences worth knowing:
+
+- `ScraperWorker` now drives a list of MCDUs, one pipeline and one WebSocket
+  client each, gathered concurrently.  Its `connected` signal carries the
+  MCDU name.
+- The window and crop are chosen in the GUI, so they are not configuration
+  any more.  `mcdu.*` is gone from `config.yaml.example`, along with the
+  getters that read it — `get_crop_region`, `get_captain_window_title`,
+  `get_copilot_window_title`, `get_captain_enabled`, `get_copilot_enabled`.
+  Keeping them would have recreated the dead-setting problem of #7.  An old
+  config file with a stale `mcdu:` section still loads; the section is
+  ignored.
+- The crop *validation* added in #2 went with it.  Crop values now come from
+  the region selector, which cannot produce an invalid one.
+- Starting with both MCDUs pointed at the same window is refused.
+
+**Not verified:** the co-pilot path has been exercised only with fake
+captures and a fake client.  Two real pop-out windows and a second CDU would
+confirm it.
+
+---
+
 ## #9 — Migrate the GUI from Tkinter to PySide6
 
 **Type:** feature · **Severity:** n/a · **Status:** FIXED

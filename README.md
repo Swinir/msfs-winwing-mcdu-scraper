@@ -12,7 +12,7 @@ via WebSocket.
   contour fallback for symbols
 - Per-cell colour and font-size detection
 - MobiFlight-compatible data format
-- Captain and Co-Pilot MCDU support, each on its own capture pipeline
+- Optional second MCDU (co-pilot), each on its own capture pipeline
 - Automatic WebSocket reconnection with backoff
 - YAML configuration
 
@@ -37,10 +37,7 @@ via WebSocket.
 Download the latest release from
 [Releases](https://github.com/Swinir/msfs-winwing-mcdu-scraper/releases):
 
-- `MSFS-MCDU-Scraper-GUI.exe` — graphical interface
-- `MSFS-MCDU-Scraper-CLI.exe` — command line
-
-No Python or dependencies needed.
+`MSFS-MCDU-Scraper-GUI.exe` — no Python or dependencies needed.
 
 ### From source
 
@@ -54,7 +51,8 @@ venv\Scripts\activate          # Windows
 pip install -r requirements.txt
 ```
 
-The CLI also needs a configuration file:
+Optionally copy `config.yaml.example` to `config.yaml` to change the
+WebSocket URLs, font or frame rate — the defaults work as-is:
 
 ```bash
 copy config.yaml.example config.yaml
@@ -65,9 +63,7 @@ copy config.yaml.example config.yaml
 1. Start MSFS with the A330
 2. Pop out the MCDU window (right-click the MCDU → "Pop Out")
 3. Start the MobiFlight WinWing MCDU Connector
-4. Run the GUI or the CLI
-
-**GUI** (recommended — no config file needed for the capture area):
+4. Run the GUI
 
 ```bash
 run_gui.bat       # Windows
@@ -77,40 +73,21 @@ run_gui.bat       # Windows
 Select your MCDU window, click "Select Screen Area" to mark the MCDU display,
 then "Start Scraper".
 
-**CLI**:
-
-```bash
-cd src && python main.py
-```
-
 See [QUICKSTART.md](QUICKSTART.md) for a step-by-step walkthrough.
 
 ## Configuration
 
-Edit `config.yaml` (see `config.yaml.example` for the annotated version):
+Everything about *what* to capture — the window and the crop region — is
+chosen in the GUI. `config.yaml` only covers where the result goes and how
+hard to work, and the defaults work unchanged:
 
 ```yaml
-mcdu:
-  captain:
-    enabled: true
-    # Substring of the pop-out window title, matched case-insensitively.
-    window_title: "Microsoft Flight Simulator"
-    # Which part of that window holds the MCDU screen.  Coordinates are
-    # relative to the window's top-left corner.
-    crop:
-      x: 120
-      y: 80
-      width: 480
-      height: 280
-
-  copilot:
-    enabled: false
-
 mobiflight:
   captain_url: "ws://localhost:8320/winwing/cdu-captain"
   copilot_url: "ws://localhost:8320/winwing/cdu-co-pilot"
+  # AirbusThales, Boeing or Collins. An unknown name is silently ignored.
   font: "AirbusThales"
-  # Consecutive failures tolerated before reconnects start backing off.
+  # Failures tolerated at the base retry delay before backing off.
   max_retries: 3
 
 performance:
@@ -121,13 +98,20 @@ performance:
 
 ### The crop region
 
-This is the setting that most often decides whether the output is readable.
-Without it the **whole window** is carved into the 24x14 character grid, so the
-parse only makes sense if the window is exactly the MCDU display.
+This is what most often decides whether the output is readable. Without it
+the **whole window** is carved into the 24x14 character grid, so the parse
+only makes sense if the window is exactly the MCDU display.
 
-The GUI sets it interactively. For the CLI, run the GUI once, use "Select
-Screen Area" (or "Auto Detect"), and copy the reported `X`, `Y`, `W`, `H` into
-the `crop` block.
+Click "Select Screen Area", then "Auto Detect". The overlay shows where the
+character cells will fall — the boundaries should sit between characters, not
+through them.
+
+### A second MCDU
+
+Under **Advanced**, tick "Co-Pilot MCDU (second CDU)" to drive two units at
+once. It is collapsed by default because almost everyone runs a single CDU.
+Pick a second pop-out window and its own screen area; the two run as
+independent pipelines and go to `copilot_url`.
 
 ## FAQ
 
@@ -196,8 +180,7 @@ Grid: 24 columns x 14 rows (336 cells)
 ```
 msfs-winwing-mcdu-scraper/
 ├── src/
-│   ├── main.py                 # Entry point (CLI)
-│   ├── gui.py                  # GUI application
+│   ├── gui.py                  # Application entry point
 │   ├── pipeline.py             # Shared capture/parse/stabilise/send loop
 │   ├── config.py               # Configuration
 │   ├── window_capture.py       # Window capture (GDI, WGC, mss)

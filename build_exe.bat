@@ -47,30 +47,6 @@ if errorlevel 1 (
 )
 
 echo.
-echo Building CLI executable...
-echo ----------------------------------------
-venv\Scripts\pyinstaller --name "MSFS-MCDU-Scraper-CLI" ^
-    --onefile ^
-    --console ^
-    --icon=NONE ^
-    --paths src ^
-    --add-data "config.yaml.example;." ^
-    --hidden-import=numpy ^
-    --hidden-import=cv2 ^
-    --hidden-import=yaml ^
-    --hidden-import=windows_capture ^
-    --exclude-module=tkinter ^
-    --exclude-module=PySide6 ^
-    --exclude-module=shiboken6 ^
-    src/main.py
-    
-if errorlevel 1 (
-    echo [ERROR] CLI build failed!
-    pause
-    exit /b 1
-)
-
-echo.
 echo ============================================================
 echo Build Complete!
 echo ============================================================
@@ -84,7 +60,6 @@ if /i "%create_release%"=="y" (
     echo Creating release package...
     if not exist release mkdir release
     xcopy /Y dist\MSFS-MCDU-Scraper-GUI.exe release\
-    xcopy /Y dist\MSFS-MCDU-Scraper-CLI.exe release\
     xcopy /Y README.md release\
     xcopy /Y QUICKSTART.md release\
     xcopy /Y LICENSE release\

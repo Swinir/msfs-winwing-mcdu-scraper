@@ -5,7 +5,7 @@ Configuration management for MSFS A330 WinWing MCDU Scraper
 import os
 import yaml
 import logging
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -86,25 +86,17 @@ class Config:
             raise
     
     def _validate_config(self):
-        """Validate configuration has required fields"""
-        required_sections = ['mcdu', 'mobiflight', 'performance']
-        for section in required_sections:
+        """Validate configuration has required fields.
+
+        Which window to capture and which part of it to crop are chosen in
+        the GUI, so they are not configuration any more.
+        """
+        for section in ('mobiflight', 'performance'):
             if section not in self.config_data:
-                raise ValueError(f"Missing required configuration section: {section}")
-        
-        # Validate MCDU configuration
-        if 'captain' not in self.config_data['mcdu']:
-            raise ValueError("Missing MCDU captain configuration")
-        
+                raise ValueError(
+                    f"Missing required configuration section: {section}")
+
         logger.info("Configuration validation passed")
-    
-    def get_captain_enabled(self) -> bool:
-        """Check if captain MCDU is enabled"""
-        return self.config_data['mcdu']['captain'].get('enabled', False)
-    
-    def get_copilot_enabled(self) -> bool:
-        """Check if copilot MCDU is enabled"""
-        return self.config_data['mcdu'].get('copilot', {}).get('enabled', False)
     
     def get_captain_url(self) -> str:
         """Get captain WebSocket URL."""
@@ -128,62 +120,6 @@ class Config:
             )
         return url
 
-    def get_crop_region(self, mcdu: str) -> Optional[Tuple[int, int, int, int]]:
-        """Get the optional crop region for an MCDU, as (x, y, width, height).
-
-        The captured window usually contains far more than the MCDU screen.
-        Without a crop the whole window is carved into the character grid and
-        the parse is meaningless, so this is how the CLI is told which part of
-        the window to look at.  The GUI sets the same thing interactively via
-        its region selector.
-
-        Args:
-            mcdu: 'captain' or 'copilot'.
-
-        Returns:
-            (x, y, width, height), or None when no crop is configured.
-        """
-        section = self.config_data['mcdu'].get(mcdu) or {}
-        crop = section.get('crop')
-        if not crop:
-            return None
-
-        missing = [k for k in ('x', 'y', 'width', 'height') if k not in crop]
-        if missing:
-            raise ValueError(
-                f"Incomplete crop region for the {mcdu} MCDU: missing "
-                f"{', '.join(missing)}. A crop needs x, y, width and height."
-            )
-
-        try:
-            x, y = int(crop['x']), int(crop['y'])
-            width, height = int(crop['width']), int(crop['height'])
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"Crop region for the {mcdu} MCDU has non-numeric values: {exc}"
-            ) from exc
-
-        if width <= 0 or height <= 0:
-            raise ValueError(
-                f"Crop region for the {mcdu} MCDU must have a positive width "
-                f"and height, got {width}x{height}."
-            )
-        if x < 0 or y < 0:
-            raise ValueError(
-                f"Crop region for the {mcdu} MCDU must have non-negative x/y, "
-                f"got x={x}, y={y}."
-            )
-
-        return (x, y, width, height)
-
-    def get_captain_window_title(self) -> str:
-        """Get the window title used to locate the captain MCDU capture window."""
-        return self.config_data['mcdu']['captain'].get('window_title', '')
-
-    def get_copilot_window_title(self) -> str:
-        """Get the window title used to locate the copilot MCDU capture window."""
-        return self.config_data['mcdu'].get('copilot', {}).get('window_title', '')
-    
     def get_font(self) -> str:
         """Get font name"""
         return self.config_data['mobiflight'].get('font', 'AirbusThales')

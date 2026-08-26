@@ -51,31 +51,13 @@ jobs:
           --exclude-module=PyQt6 `
           src/gui.py
     
-    - name: Build CLI Executable
-      run: |
-        pyinstaller --name "MSFS-MCDU-Scraper-CLI" `
-          --onefile `
-          --console `
-          --icon=NONE `
-          --paths src `
-          --add-data "config.yaml.example;." `
-          --hidden-import=numpy `
-          --hidden-import=cv2 `
-          --hidden-import=yaml `
-          --hidden-import=windows_capture `
-          --exclude-module=tkinter `
-          --exclude-module=PySide6 `
-          --exclude-module=shiboken6 `
-          src/main.py
-    
     - name: Package Release
       run: |
         # Create release directory
         New-Item -ItemType Directory -Force -Path release
         
-        # Copy executables
+        # Copy executable
         Copy-Item dist/MSFS-MCDU-Scraper-GUI.exe release/
-        Copy-Item dist/MSFS-MCDU-Scraper-CLI.exe release/
         
         # Copy documentation
         Copy-Item README.md release/
@@ -88,18 +70,12 @@ jobs:
         
         ## Quick Start
         
-        ### GUI Version (Recommended)
         1. Double-click **MSFS-MCDU-Scraper-GUI.exe**
         2. Pop out MCDU in MSFS
         3. Start MobiFlight WinWing MCDU Connector
         4. Select your MCDU window from the dropdown
-        5. Click "Start Scraper"
-        
-        ### CLI Version
-        1. Copy config.yaml.example to config.yaml
-        2. Set window_title and the crop region (the GUI's
-           "Select Screen Area" button reports the values)
-        3. Run **MSFS-MCDU-Scraper-CLI.exe**
+        5. Click "Select Screen Area", then "Auto Detect"
+        6. Click "Start Scraper"
         
         ## Requirements
         - Windows 10/11
@@ -135,8 +111,7 @@ jobs:
           # MSFS WinWing MCDU Scraper - Windows Executable Release
           
           ## What's Included
-          - **MSFS-MCDU-Scraper-GUI.exe** - Graphical user interface (recommended)
-          - **MSFS-MCDU-Scraper-CLI.exe** - Command-line version
+          - **MSFS-MCDU-Scraper-GUI.exe** - the application
           - Complete documentation
           - Example configuration file
           
