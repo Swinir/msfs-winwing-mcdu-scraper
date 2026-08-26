@@ -40,12 +40,16 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSpinBox,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from aircraft_profiles import PROFILES, AircraftProfile
 from config import Config
+from mcdu_parser import set_template_store, _get_template_matcher
+from mcdu_parser import _prev_row_imgs, _prev_row_ocr
 from mobiflight_client import MobiFlightClient
 from pipeline import MCDUPipeline, PipelineSettings
 from region_selector import RegionSelectorDialog
@@ -104,10 +108,17 @@ class ScraperWorker(QObject):
     failed = Signal(str)
     connected = Signal(str)
 
-    def __init__(self, config: Config, specs: List[McduSpec]) -> None:
+    def __init__(self, config: Config, specs: List[McduSpec],
+                 columns: int = 24, rows: int = 14,
+                 small_font_rule: str = "labels_small",
+                 font: str = "AirbusThales") -> None:
         super().__init__()
         self.config = config
         self.specs = list(specs)
+        self.columns = columns
+        self.rows = rows
+        self.small_font_rule = small_font_rule
+        self.font = font
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._pipelines: List[MCDUPipeline] = []
         self._stopping = False
@@ -142,7 +153,7 @@ class ScraperWorker(QObject):
         """Connect one MCDU and run its pipeline until stopped."""
         client = MobiFlightClient(
             websocket_uri=spec.websocket_uri,
-            font=self.config.get_font(),
+            font=self.font,
             max_retries=self.config.get_max_retries(),
         )
         client_task = asyncio.create_task(client.run())
@@ -154,8 +165,9 @@ class ScraperWorker(QObject):
                 name=spec.name,
                 capture=spec.capture,
                 client=client,
-                columns=Config.CDU_COLUMNS,
-                rows=Config.CDU_ROWS,
+                columns=self.columns,
+                rows=self.rows,
+                small_font_rule=self.small_font_rule,
                 settings=PipelineSettings(
                     fps=self.config.get_capture_fps(),
                     enable_caching=self.config.get_enable_caching(),
@@ -259,6 +271,13 @@ class MCDUScraperWindow(QMainWindow):
         self.crop_info_label = QLabel("No crop region set")
         grid.addWidget(self.crop_info_label, 1, 2, 1, 2)
 
+        grid.addWidget(QLabel("Aircraft:"), 2, 0)
+        self.profile_combo = QComboBox()
+        for profile in PROFILES.values():
+            self.profile_combo.addItem(profile.label, profile.id)
+        self.profile_combo.currentIndexChanged.connect(self._on_profile_changed)
+        grid.addWidget(self.profile_combo, 2, 1)
+
         grid.setColumnStretch(1, 1)
         return group
 
@@ -306,12 +325,46 @@ class MCDUScraperWindow(QMainWindow):
 
         grid.setColumnStretch(1, 1)
         outer.addWidget(self.copilot_group)
+
+        # Grid override: for FMS types whose dimensions we do not know yet
+        # (GNS-XLS, ...) or when a built-in profile's guess is wrong.
+        self.grid_override_group = QGroupBox("Override grid size")
+        self.grid_override_group.setCheckable(True)
+        self.grid_override_group.setChecked(False)
+        self.grid_override_group.setVisible(False)
+
+        override_row = QHBoxLayout(self.grid_override_group)
+        override_row.addWidget(QLabel("Columns:"))
+        self.grid_cols_spin = QSpinBox()
+        self.grid_cols_spin.setRange(8, 40)
+        self.grid_cols_spin.setValue(24)
+        override_row.addWidget(self.grid_cols_spin)
+        override_row.addWidget(QLabel("Rows:"))
+        self.grid_rows_spin = QSpinBox()
+        self.grid_rows_spin.setRange(4, 20)
+        self.grid_rows_spin.setValue(14)
+        override_row.addWidget(self.grid_rows_spin)
+        override_row.addStretch()
+        outer.addWidget(self.grid_override_group)
         return container
 
     def _toggle_advanced(self, shown: bool) -> None:
         self.advanced_toggle.setArrowType(
             Qt.DownArrow if shown else Qt.RightArrow)
         self.copilot_group.setVisible(shown)
+        self.grid_override_group.setVisible(shown)
+
+    def _on_profile_changed(self) -> None:
+        profile = self._current_profile()
+        # Seed the override spinboxes with the profile's grid so overriding
+        # starts from the right numbers.
+        self.grid_cols_spin.setValue(profile.columns)
+        self.grid_rows_spin.setValue(profile.rows)
+        columns, rows = self._current_grid()
+        self.log(f"Aircraft profile: {profile.label} "
+                 f"({columns}x{rows}, font {profile.font})")
+        if profile.notes:
+            self.log(profile.notes)
 
     def _toggle_copilot(self, enabled: bool) -> None:
         if enabled and not self.copilot_window_combo.count():
@@ -435,6 +488,15 @@ class MCDUScraperWindow(QMainWindow):
             return None
         return self.window_list[index]
 
+    def _current_profile(self) -> AircraftProfile:
+        return PROFILES[self.profile_combo.currentData()]
+
+    def _current_grid(self) -> tuple:
+        if self.grid_override_group.isChecked():
+            return (self.grid_cols_spin.value(), self.grid_rows_spin.value())
+        profile = self._current_profile()
+        return (profile.columns, profile.rows)
+
     def _copilot_enabled(self) -> bool:
         return (getattr(self, "copilot_group", None) is not None
                 and self.copilot_group.isChecked())
@@ -468,7 +530,8 @@ class MCDUScraperWindow(QMainWindow):
                 temp_capture.close()
 
             dialog = RegionSelectorDialog(self, preview,
-                                          self.crop_regions.get(mcdu))
+                                          self.crop_regions.get(mcdu),
+                                          grid_size=self._current_grid())
             result = dialog.show()
 
             label = self._crop_label_for(mcdu)
@@ -558,7 +621,19 @@ class MCDUScraperWindow(QMainWindow):
             self._release_captures()
             return
 
-        self.worker = ScraperWorker(self.config, specs)
+        profile = self._current_profile()
+        columns, rows = self._current_grid()
+        # Glyphs learned from one font must not be matched against another:
+        # each profile has its own template store.
+        set_template_store(profile.template_path())
+        font = self.config.get_font() or profile.font
+        self.log(f"Profile {profile.id}: grid {columns}x{rows}, font {font}")
+
+        self.worker = ScraperWorker(
+            self.config, specs,
+            columns=columns, rows=rows,
+            small_font_rule=profile.small_font_rule, font=font,
+        )
         self.thread = QThread()
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.start)
@@ -580,7 +655,8 @@ class MCDUScraperWindow(QMainWindow):
     def _set_inputs_enabled(self, enabled: bool) -> None:
         """Freeze the selection controls while a capture is running."""
         for widget in (self.window_combo, self.select_area_button,
-                       self.copilot_group, self.show_all_checkbox):
+                       self.copilot_group, self.show_all_checkbox,
+                       self.profile_combo, self.grid_override_group):
             widget.setEnabled(enabled)
 
     def _release_captures(self) -> None:
@@ -631,12 +707,10 @@ class MCDUScraperWindow(QMainWindow):
             )
             return
 
-        from mcdu_parser import (
-            TemplateMatcher, _get_template_matcher,
-            _prev_row_imgs, _prev_row_ocr,
-        )
-
-        template_path = TemplateMatcher.DEFAULT_TEMPLATE_PATH
+        profile = self._current_profile()
+        template_path = profile.template_path()
+        self.log(f"Deleting templates for profile '{profile.id}' "
+                 f"({template_path.name})")
         if template_path.exists():
             try:
                 template_path.unlink()
@@ -649,9 +723,10 @@ class MCDUScraperWindow(QMainWindow):
         else:
             self.log("No template file on disk.")
 
-        # Reset the in-memory singleton and row caches so the next start
-        # triggers a full warmup with fresh learning.
+        # Reset the in-memory state so the next start triggers a full
+        # warmup with fresh learning for this profile.
         try:
+            set_template_store(template_path)
             _get_template_matcher().reset()
             _prev_row_imgs.clear()
             _prev_row_ocr.clear()

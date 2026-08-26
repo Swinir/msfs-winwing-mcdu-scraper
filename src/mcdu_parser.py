@@ -472,15 +472,39 @@ class TemplateMatcher:
         logger.info("Template matcher reset — all templates cleared")
 
 
-# Singleton
+# Active matcher.  One store is live at a time: glyphs learned from one
+# font must never be matched against another, so switching aircraft profile
+# switches the store (see set_template_store).
 _template_matcher: Optional[TemplateMatcher] = None
+_template_store_path: Optional[Path] = None
 
 
 def _get_template_matcher() -> TemplateMatcher:
     global _template_matcher
     if _template_matcher is None:
-        _template_matcher = TemplateMatcher()
+        _template_matcher = TemplateMatcher(template_path=_template_store_path)
     return _template_matcher
+
+
+def set_template_store(path) -> None:
+    """Make *path* the active learned-glyph store.
+
+    Saves the outgoing store first, and clears the row-level OCR caches:
+    cached results were produced by the old store's glyphs.
+    A no-op when *path* is already active.
+    """
+    global _template_matcher, _template_store_path
+    path = Path(path)
+    if _template_matcher is not None and _template_store_path == path:
+        return
+    if _template_matcher is not None:
+        _template_matcher.save()
+    _template_store_path = path
+    _template_matcher = TemplateMatcher(template_path=path)
+    _prev_row_imgs.clear()
+    _prev_row_ocr.clear()
+    logger.info("Template store switched to %s (%d templates)",
+                path.name, _template_matcher.template_count)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -547,9 +571,14 @@ class MCDUParser:
 
     def __init__(self, image: np.ndarray,
                  columns: int = 24, rows: int = 14,
-                 source_id: str = "default") -> None:
+                 source_id: str = "default",
+                 small_font_rule: str = "labels_small") -> None:
         self.columns = columns
         self.rows = rows
+        # How rows map to the hardware's large/small font:
+        # "labels_small" (Airbus/Boeing: odd label rows small, last row
+        # large) or "all_large" (UNS-1 style CRTs).
+        self.small_font_rule = small_font_rule
         # Namespaces the row-level OCR caches.  Every capture source
         # (captain, co-pilot, ...) must pass a distinct id, otherwise they
         # share cache entries and serve each other stale rows.
@@ -670,7 +699,11 @@ class MCDUParser:
     #  Font-size heuristic
     # ------------------------------------------------------------------
     def is_small_font(self, row: int) -> bool:
-        return (row % 2 == 1) and (row != 13)
+        if self.small_font_rule == "all_large":
+            return False
+        # Label rows sit on odd indices; the last row is the scratchpad and
+        # always renders large.  (Generalises the old "row != 13".)
+        return (row % 2 == 1) and (row != self.rows - 1)
 
     # ------------------------------------------------------------------
     #  Cell preprocessing  (for template matching)

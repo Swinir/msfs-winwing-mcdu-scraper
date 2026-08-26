@@ -422,6 +422,49 @@ confirm it.
 
 ---
 
+## #21 — Aircraft profiles: support other FMS families
+
+**Type:** feature · **Severity:** n/a · **Status:** DONE (awaiting real captures)
+
+The scraper is aircraft-agnostic — it OCRs pixels and learns glyphs at
+runtime — so supporting other aircraft meant profiles, not per-plane code.
+What actually varies between FMS families:
+
+- grid dimensions,
+- the font the WinWing hardware loads,
+- whether label rows render small,
+- and the template store (Boeing glyphs must never match Airbus templates).
+
+`src/aircraft_profiles.py` ships four: Airbus MCDU (24x14, AirbusThales —
+the legacy store, so existing learned templates keep working), Boeing CDU
+(24x14, Boeing), UNS-1 (24x10, all-large, experimental), and Custom (grid
+set under Advanced → Override grid size).  Grids smaller than the hardware
+24x14 are padded top-left before sending; `set_template_store()` switches
+stores atomically, saving the outgoing one.
+
+**Review of the proposed aircraft list** (originally from Gemini):
+
+- *Dropped — wrong premise:* iniBuilds A350 has no MCDU at all (KCCU +
+  MFD pages); TFDi MD-11, Maddog X, iniBuilds A300/A340, Fenix, FBW and
+  PMDG all have **native MobiFlight scripts** already, so scraping them is
+  redundant.
+- *Kept:* default/iniBuilds Airbus suite, LatinVFR/Horizon (default-based
+  avionics → Airbus profile); default 747-8/787, C-17, E-7, GNLU910 →
+  Boeing profile; Black Square + Just Flight UNS-1 fleet → UNS-1 profile;
+  GNS-XLS and other unknowns → Custom.
+- *Unverified:* the E-7 Wedgetail's presence/CDU in MSFS 2024.
+
+**Open, pending real pop-out captures:**
+
+- UNS-1 grid dimensions are a best guess (24x10). Measured on synthetic
+  24x10 pages: detection IoU 0.99, recognition 100% through the detected
+  crop — but the real UNS-1 CRT may differ in rows, aspect and glyph style.
+- Padding alignment is top-left; whether UNS-1 rows should instead align to
+  the hardware's line-select keys needs hardware-in-hand judgement.
+- Boeing profile is untested against a real 747/787/C-17 pop-out.
+
+---
+
 ## #9 — Migrate the GUI from Tkinter to PySide6
 
 **Type:** feature · **Severity:** n/a · **Status:** FIXED

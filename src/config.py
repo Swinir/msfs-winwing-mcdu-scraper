@@ -120,9 +120,14 @@ class Config:
             )
         return url
 
-    def get_font(self) -> str:
-        """Get font name"""
-        return self.config_data['mobiflight'].get('font', 'AirbusThales')
+    def get_font(self) -> Optional[str]:
+        """Font override, or None to use the aircraft profile's font.
+
+        Each aircraft profile carries the right hardware font (AirbusThales,
+        Boeing, ...), so most users should leave this unset. Setting it here
+        forces one font regardless of profile.
+        """
+        return self.config_data['mobiflight'].get('font') or None
     
     def get_max_retries(self) -> int:
         """Get max WebSocket connection retries"""

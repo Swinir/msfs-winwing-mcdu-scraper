@@ -4,7 +4,7 @@ Get the MSFS A330 WinWing MCDU Scraper running in about five minutes.
 
 ## What it does
 
-MSFS draws the A330 MCDU on screen.  This app screenshots that window, reads
+MSFS draws the aircraft's FMS display on screen.  This app screenshots that window, reads
 the 24x14 character grid back out of the pixels, and forwards it to MobiFlight,
 which drives your physical WinWing CDU display.
 
@@ -13,7 +13,7 @@ It does not talk to the simulator directly — it reads whatever is on screen.
 ## Before you start
 
 - [ ] Windows 10/11
-- [ ] MSFS 2020/2024 with the default Airbus A330
+- [ ] MSFS 2020/2024 with an aircraft whose FMS has a pop-out window
 - [ ] WinWing CDU hardware
 - [ ] MobiFlight **WinWing MCDU Connector** installed and running
 - [ ] Python 3.9-3.13 — only if running from source (the `.exe` needs nothing)
@@ -29,6 +29,8 @@ visually.
    from source.
 4. **Select your window** from the dropdown (look for "Flight Simulator" or
    "MCDU"). Tick "Show all windows" if it is not listed.
+   Then pick your **Aircraft** profile — Airbus MCDU, Boeing CDU, UNS-1, or
+   a custom grid. The profile sets the grid overlay and the hardware font.
 5. **Click "Select Screen Area"**, then "Auto Detect" — or drag a box around
    just the MCDU screen. The 24x14 grid overlay shows how the characters will
    be carved up; the boundaries should sit between characters, not through them.

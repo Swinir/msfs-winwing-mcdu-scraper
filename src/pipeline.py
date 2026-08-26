@@ -94,6 +94,32 @@ class DisplayStabiliser:
         self._counts = None
 
 
+#: The WinWing CDU hardware always shows this grid, whatever the aircraft's
+#: FMS displays.  Smaller profile grids are padded out before sending.
+HARDWARE_COLUMNS = 24
+HARDWARE_ROWS = 14
+
+
+def pad_to_hardware(cells: list, columns: int, rows: int) -> list:
+    """Place a columns x rows grid into the fixed 24x14 hardware grid.
+
+    Anchored top-left: the UNS-1 style displays put their content at the top,
+    and MobiFlight expects exactly HARDWARE_COLUMNS * HARDWARE_ROWS cells.
+    A full-size grid passes through untouched.
+    """
+    if columns == HARDWARE_COLUMNS and rows == HARDWARE_ROWS:
+        return cells
+    out = []
+    for row in range(HARDWARE_ROWS):
+        for col in range(HARDWARE_COLUMNS):
+            if row < rows and col < columns:
+                index = row * columns + col
+                out.append(cells[index] if index < len(cells) else [])
+            else:
+                out.append([])
+    return out
+
+
 def format_grid(display_data: list, columns: int, rows: int) -> List[str]:
     """Render a parsed grid as text lines for diagnostic logging."""
     lines = []
@@ -116,7 +142,8 @@ class MCDUPipeline:
     """Drives one MCDU: capture, parse, stabilise, send."""
 
     def __init__(self, name, capture, client, columns: int, rows: int,
-                 settings: Optional[PipelineSettings] = None) -> None:
+                 settings: Optional[PipelineSettings] = None,
+                 small_font_rule: str = "labels_small") -> None:
         """
         Args:
             name: Identifier for this MCDU ('captain', 'copilot', ...).  Also
@@ -132,6 +159,7 @@ class MCDUPipeline:
         self.client = client
         self.columns = columns
         self.rows = rows
+        self.small_font_rule = small_font_rule
         self.settings = settings or PipelineSettings()
 
         self._running = False
@@ -191,6 +219,10 @@ class MCDUPipeline:
 
         self._log_diagnostics(img, display_data, parse_ms)
 
+        # The hardware is a fixed 24x14 whatever the FMS shows; pad smaller
+        # profile grids out to it.
+        display_data = pad_to_hardware(display_data, self.columns, self.rows)
+
         # Only touch the hardware when the stabilised grid actually changed.
         if display_data != self._last_sent:
             await self.client.send_display_data(display_data)
@@ -212,6 +244,7 @@ class MCDUPipeline:
                 columns=self.columns,
                 rows=self.rows,
                 source_id=self.name,
+                small_font_rule=self.small_font_rule,
             )
             return parser.parse_grid()
 

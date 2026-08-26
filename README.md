@@ -1,7 +1,7 @@
-# MSFS A330 WinWing MCDU Scraper
+# MSFS WinWing MCDU Scraper
 
-Captures the MSFS Airbus A330 MCDU display and sends it to WinWing CDU hardware
-via WebSocket.
+Captures an aircraft's FMS display (MCDU / CDU / UNS-1) from its MSFS pop-out
+window and sends it to WinWing CDU hardware via WebSocket.
 
 ## Features
 
@@ -12,6 +12,8 @@ via WebSocket.
   contour fallback for symbols
 - Per-cell colour and font-size detection
 - MobiFlight-compatible data format
+- Aircraft profiles: Airbus MCDU, Boeing CDU, UNS-1, or a custom grid —
+  glyphs are learned at runtime, so new fonts teach themselves
 - Optional second MCDU (co-pilot), each on its own capture pipeline
 - Automatic WebSocket reconnection with backoff
 - YAML configuration
@@ -22,7 +24,7 @@ via WebSocket.
 
 - **Operating System**: Windows 10/11
 - **MobiFlight**: WinWing MCDU Connector must be running
-- **MSFS 2020/2024**: with the default Airbus A330
+- **MSFS 2020/2024**: with an aircraft whose FMS has a pop-out window
 - **Python**: 3.9-3.13 (only when running from source; PySide6 sets the range)
 
 ### Hardware
@@ -75,6 +77,32 @@ then "Start Scraper".
 
 See [QUICKSTART.md](QUICKSTART.md) for a step-by-step walkthrough.
 
+## Supported aircraft
+
+The scraper never talks to the aircraft — it reads pixels — so it works with
+any FMS whose pop-out shows a character grid. Pick the matching profile in
+the **Aircraft** dropdown:
+
+| Profile | Grid | Font | Covers |
+|---|---|---|---|
+| Airbus MCDU | 24x14 | AirbusThales | Default/iniBuilds A320neo, A321, A330 (MSFS 2020/2024); LatinVFR & Horizon Sim Airbuses; Headwind A330-900 without SimBridge |
+| Boeing CDU | 24x14 | Boeing | Default 747-8 and 787; C-17, E-7 (MSFS 2024); GNLU910-style FMS |
+| UNS-1 (experimental) | 24x10* | Boeing | Black Square fleet (TBM 850, Dukes, King Air, Starship); Just Flight BAe 146 / F28 UNS-1 |
+| Custom grid | you choose | AirbusThales | Anything else (GNS-XLS, CMA-900, …) — set the grid under Advanced |
+
+*The UNS-1 grid size is a best guess pending real captures; correct it under
+**Advanced → Override grid size** if rows land in the wrong cells.
+
+Grids smaller than the hardware's 24x14 are padded top-left. Each profile
+keeps its own learned-glyph store, so switching aircraft never corrupts
+another family's templates — the first run on a new family redoes the
+~30s warmup once.
+
+Before scraping, check MobiFlight itself: it ships **native scripts** for
+Fenix, FlyByWire, PMDG 737/777, iniBuilds A300/A340, TFDi MD-11, Maddog X
+and others. Those read sim data directly and need no OCR — this scraper is
+for aircraft with *no* such integration.
+
 ## Configuration
 
 Everything about *what* to capture — the window and the crop region — is
@@ -85,8 +113,8 @@ hard to work, and the defaults work unchanged:
 mobiflight:
   captain_url: "ws://localhost:8320/winwing/cdu-captain"
   copilot_url: "ws://localhost:8320/winwing/cdu-co-pilot"
-  # AirbusThales, Boeing or Collins. An unknown name is silently ignored.
-  font: "AirbusThales"
+  # Optional font override - normally the aircraft profile picks the font.
+  # font: "AirbusThales"
   # Failures tolerated at the base retry delay before backing off.
   max_retries: 3
 

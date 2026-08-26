@@ -54,17 +54,25 @@ def find_mono_font() -> Optional[str]:
 
 @dataclass
 class MCDUPage:
-    """A page of MCDU text plus the colour of each row."""
+    """A page of FMS text plus the colour of each row.
+
+    Carries its own grid dimensions and small-font convention, so fixtures
+    can model displays other than the 24x14 airliner CDU (the UNS-1 shows
+    fewer rows, all at one size).
+    """
 
     lines: List[str] = field(default_factory=list)
     colors: List[str] = field(default_factory=list)
+    columns: int = COLUMNS
+    rows: int = ROWS
+    small_font_rule: str = "labels_small"
 
     def padded(self) -> List[str]:
-        """Rows padded/truncated to exactly COLUMNS characters."""
+        """Rows padded/truncated to exactly *columns* characters."""
         out = []
-        for i in range(ROWS):
+        for i in range(self.rows):
             line = self.lines[i] if i < len(self.lines) else ""
-            out.append(line[:COLUMNS].ljust(COLUMNS))
+            out.append(line[:self.columns].ljust(self.columns))
         return out
 
     def row_color(self, row: int) -> str:
@@ -72,12 +80,17 @@ class MCDUPage:
             return self.colors[row]
         return "w"
 
+    def is_small_row(self, row: int) -> bool:
+        if self.small_font_rule == "all_large":
+            return False
+        return (row % 2 == 1) and (row != self.rows - 1)
+
     def expected_cells(self) -> List[list]:
         """Ground truth in the parser's output format."""
         cells = []
         for row, line in enumerate(self.padded()):
             color = self.row_color(row)
-            size = 1 if (row % 2 == 1 and row != 13) else 0
+            size = 1 if self.is_small_row(row) else 0
             for char in line:
                 cells.append([] if char == " " else [char, color, size])
         return cells
@@ -155,6 +168,28 @@ def alpha_numeric_page() -> MCDUPage:
     )
 
 
+def uns1_page() -> MCDUPage:
+    """A UNS-1 style FMS page: fewer rows, all one size, green phosphor."""
+    return MCDUPage(
+        lines=[
+            "  NAV      APPR   1/2   ",
+            "FR KBOS   121.5  NM 42.1",
+            "TO ENE    HDG 042  D 12 ",
+            "NX SCUPP  ETE 00:14     ",
+            "GS 285 KT  XTK L 0.2    ",
+            "BRG 041  TAS 290        ",
+            "FL180  FUEL 1842        ",
+            "SXTK 0.0  MSA 3100      ",
+            "WIND 270/45             ",
+            "POS N42 21.7 W071 00.4  ",
+        ],
+        colors=["g"] * 10,
+        columns=24,
+        rows=10,
+        small_font_rule="all_large",
+    )
+
+
 ALL_PAGES = {
     "flight_plan": flight_plan_page,
     "perf": perf_page,
@@ -187,7 +222,7 @@ def render_mcdu(
         raise RuntimeError("no monospace font available for rendering")
 
     cell_w, cell_h = cell_size
-    width, height = COLUMNS * cell_w, ROWS * cell_h
+    width, height = page.columns * cell_w, page.rows * cell_h
     image = Image.new("RGB", (width, height), background)
     draw = ImageDraw.Draw(image)
 
@@ -196,8 +231,7 @@ def render_mcdu(
     small = ImageFont.truetype(font_path, int(cell_h * 0.64))
 
     for row, line in enumerate(page.padded()):
-        is_small = (row % 2 == 1 and row != 13)
-        font = small if is_small else large
+        font = small if page.is_small_row(row) else large
         rgb = COLOR_RGB[page.row_color(row)]
         for col, char in enumerate(line):
             if char == " ":

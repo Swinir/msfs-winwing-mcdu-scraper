@@ -74,7 +74,7 @@ class TestValidation(unittest.TestCase):
             "mobiflight": BASE["mobiflight"],
             "performance": {"capture_fps": 30},
         }))
-        self.assertEqual(cfg.get_font(), "AirbusThales")
+        self.assertIsNone(cfg.get_font())
 
     def test_stale_mcdu_section_is_ignored(self):
         """An old config file must still load rather than break on startup."""
@@ -134,8 +134,9 @@ class TestPerformanceSettings(unittest.TestCase):
         cfg = make_config(performance={"capture_fps": 30, "enable_caching": False})
         self.assertFalse(cfg.get_enable_caching())
 
-    def test_font_default(self):
-        self.assertEqual(make_config().get_font(), "AirbusThales")
+    def test_font_defaults_to_none_so_the_profile_decides(self):
+        """No override configured -> the aircraft profile's font is used."""
+        self.assertIsNone(make_config().get_font())
 
     def test_font_override(self):
         cfg = make_config(mobiflight={"font": "Boeing"})
@@ -153,7 +154,7 @@ class TestShippedExample(unittest.TestCase):
         cfg = Config(str(example))
         self.assertTrue(cfg.get_captain_url())
         self.assertTrue(cfg.get_copilot_url())
-        self.assertEqual(cfg.get_font(), "AirbusThales")
+        self.assertIsNone(cfg.get_font(), "example should not force a font")
         self.assertGreater(cfg.get_capture_fps(), 0)
 
     def test_example_has_no_settings_nothing_reads(self):
@@ -166,7 +167,7 @@ class TestShippedExample(unittest.TestCase):
         self.assertEqual(set(data), {"mobiflight", "performance"})
         self.assertEqual(
             set(data["mobiflight"]),
-            {"captain_url", "copilot_url", "font", "max_retries"},
+            {"captain_url", "copilot_url", "max_retries"},
         )
         self.assertEqual(
             set(data["performance"]), {"capture_fps", "enable_caching"},

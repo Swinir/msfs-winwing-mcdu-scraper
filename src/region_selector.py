@@ -48,15 +48,14 @@ def numpy_to_qpixmap(image: np.ndarray) -> QPixmap:
 class _SelectionCanvas(QWidget):
     """Displays the capture preview and handles the selection interaction."""
 
-    GRID_COLS = 24
-    GRID_ROWS = 14
-
     def __init__(self, pixmap: QPixmap, selection: RegionSelection,
-                 rect: Rect, parent=None) -> None:
+                 rect: Rect, parent=None,
+                 grid_size: Tuple[int, int] = (24, 14)) -> None:
         super().__init__(parent)
         self.selection = selection
         self.rect_ = rect
         self.show_grid = True
+        self.grid_cols, self.grid_rows = grid_size
 
         width, height = selection.display_size
         self._pixmap = pixmap.scaled(
@@ -105,11 +104,11 @@ class _SelectionCanvas(QWidget):
         # Character grid, so cell boundaries can be checked against glyphs.
         if self.show_grid and r.width > 20 and r.height > 20:
             painter.setPen(QPen(QColor(0, 255, 255, 90), 1))
-            for c in range(1, self.GRID_COLS):
-                gx = r.x1 + int(c * r.width / self.GRID_COLS)
+            for c in range(1, self.grid_cols):
+                gx = r.x1 + int(c * r.width / self.grid_cols)
                 painter.drawLine(gx, r.y1, gx, r.y2)
-            for row in range(1, self.GRID_ROWS):
-                gy = r.y1 + int(row * r.height / self.GRID_ROWS)
+            for row in range(1, self.grid_rows):
+                gy = r.y1 + int(row * r.height / self.grid_rows)
                 painter.drawLine(r.x1, gy, r.x2, gy)
 
         painter.setPen(QPen(QColor(255, 0, 0), 2))
@@ -191,17 +190,16 @@ class _SelectionCanvas(QWidget):
 class RegionSelectorDialog(QDialog):
     """Modal dialog returning an (x, y, width, height) crop, or None."""
 
-    GRID_COLS = 24
-    GRID_ROWS = 14
-
     MAX_DISPLAY_WIDTH = 850
     MAX_DISPLAY_HEIGHT = 550
 
     def __init__(self, parent, image: np.ndarray,
-                 initial_region: Optional[Tuple[int, int, int, int]] = None):
+                 initial_region: Optional[Tuple[int, int, int, int]] = None,
+                 grid_size: Tuple[int, int] = (24, 14)):
         super().__init__(parent)
         self.setWindowTitle("Select FMC Screen Area")
         self.setModal(True)
+        self.grid_cols, self.grid_rows = grid_size
 
         self.original_image = image
         self.result_region: Optional[Tuple[int, int, int, int]] = None
@@ -217,6 +215,7 @@ class RegionSelectorDialog(QDialog):
 
         self.canvas = _SelectionCanvas(
             numpy_to_qpixmap(image), self.selection, rect, self,
+            grid_size=grid_size,
         )
         self.canvas.set_change_handler(self._on_rect_changed)
 
@@ -229,7 +228,8 @@ class RegionSelectorDialog(QDialog):
         instructions = QLabel(
             "Drag corners to tightly frame the MCDU text "
             "(exclude title bar and borders).\n"
-            "The cyan grid shows where the 24x14 character cells will fall."
+            f"The cyan grid shows where the "
+            f"{self.grid_cols}x{self.grid_rows} character cells will fall."
         )
         instructions.setAlignment(Qt.AlignCenter)
         layout.addWidget(instructions)
@@ -254,7 +254,8 @@ class RegionSelectorDialog(QDialog):
             button.clicked.connect(slot)
             buttons.addWidget(button)
 
-        self.grid_checkbox = QCheckBox("Show 24x14 grid")
+        self.grid_checkbox = QCheckBox(
+            f"Show {self.grid_cols}x{self.grid_rows} grid")
         self.grid_checkbox.setChecked(True)
         self.grid_checkbox.toggled.connect(self.canvas.set_grid_visible)
         buttons.addWidget(self.grid_checkbox)
@@ -268,7 +269,7 @@ class RegionSelectorDialog(QDialog):
     def _on_rect_changed(self, rect: Rect) -> None:
         x, y, w, h = self.selection.to_original(rect)
         cell_w, cell_h = self.selection.cell_size(
-            rect, self.GRID_COLS, self.GRID_ROWS,
+            rect, self.grid_cols, self.grid_rows,
         )
         self.coord_label.setText(
             f"X={x}  Y={y}  W={w}  H={h}  |  "
@@ -288,7 +289,7 @@ class RegionSelectorDialog(QDialog):
             return
 
         result = detect_mcdu_region(
-            self.original_image, self.GRID_COLS, self.GRID_ROWS,
+            self.original_image, self.grid_cols, self.grid_rows,
         )
         if result is None:
             self.coord_label.setText(
