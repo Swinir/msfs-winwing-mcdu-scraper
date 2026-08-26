@@ -1,6 +1,6 @@
 # Test Suite
 
-This directory contains unit tests for the MSFS WinWing MCDU Scraper.
+This directory contains unit tests for the MSFS WinWing CDU Scraper.
 
 ## Test Files
 

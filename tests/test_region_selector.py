@@ -1,315 +1,215 @@
 """
-Unit tests for Region Selector and Window Capture
+Unit tests for the region-selector geometry and crop validation.
 
-Tests the coordinate transformation logic and crop validation
-without requiring GUI components (tkinter).
+These exercise src/region_geometry.py directly.  The previous version of this
+file recomputed the arithmetic inline and asserted the recomputation, so every
+case passed regardless of what the selector actually did.
+
+No GUI toolkit is imported, so the suite runs headless.
 """
 
 import unittest
-import numpy as np
 from pathlib import Path
 import sys
+
+import numpy as np
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-
-class TestRegionSelectorCoordinates(unittest.TestCase):
-    """Test cases for RegionSelectorDialog coordinate transformations"""
-    
-    def test_coordinate_transformation_no_scaling(self):
-        """Test coordinate transformation when image fits without scaling"""
-        # Test the transformation logic directly
-        original_size = (400, 300)
-        scaled_size = (400, 300)  # No scaling
-        
-        # Selection in scaled space
-        scaled_selection = (50, 50, 200, 150)
-        
-        # Calculate what the original coordinates should be
-        scale_x = original_size[0] / scaled_size[0]
-        scale_y = original_size[1] / scaled_size[1]
-        
-        x1_orig = int(scaled_selection[0] * scale_x)
-        y1_orig = int(scaled_selection[1] * scale_y)
-        x2_orig = int(scaled_selection[2] * scale_x)
-        y2_orig = int(scaled_selection[3] * scale_y)
-        
-        # When no scaling, coordinates should be identical
-        self.assertEqual(x1_orig, 50)
-        self.assertEqual(y1_orig, 50)
-        self.assertEqual(x2_orig, 200)
-        self.assertEqual(y2_orig, 150)
-    
-    def test_coordinate_transformation_with_scaling(self):
-        """Test coordinate transformation when image is scaled down"""
-        # Original image: 1600x1200
-        original_size = (1600, 1200)
-        # Scaled to fit 800x600 dialog
-        scaled_size = (800, 600)
-        
-        # Selection in scaled space (100, 100) to (400, 300)
-        scaled_selection = (100, 100, 400, 300)
-        
-        # Calculate original coordinates
-        scale_x = original_size[0] / scaled_size[0]  # 2.0
-        scale_y = original_size[1] / scaled_size[1]  # 2.0
-        
-        x1_orig = int(scaled_selection[0] * scale_x)
-        y1_orig = int(scaled_selection[1] * scale_y)
-        x2_orig = int(scaled_selection[2] * scale_x)
-        y2_orig = int(scaled_selection[3] * scale_y)
-        
-        # Should be doubled
-        self.assertEqual(x1_orig, 200)
-        self.assertEqual(y1_orig, 200)
-        self.assertEqual(x2_orig, 800)
-        self.assertEqual(y2_orig, 600)
-    
-    def test_coordinate_transformation_asymmetric_scaling(self):
-        """Test coordinate transformation with different x/y scaling"""
-        # Original image: 1600x900
-        original_size = (1600, 900)
-        # Scaled to fit 800x600 (different aspect ratio)
-        scaled_size = (800, 450)
-        
-        # Selection in scaled space
-        scaled_selection = (100, 50, 300, 200)
-        
-        # Calculate original coordinates
-        scale_x = original_size[0] / scaled_size[0]  # 2.0
-        scale_y = original_size[1] / scaled_size[1]  # 2.0
-        
-        x1_orig = int(scaled_selection[0] * scale_x)
-        y1_orig = int(scaled_selection[1] * scale_y)
-        x2_orig = int(scaled_selection[2] * scale_x)
-        y2_orig = int(scaled_selection[3] * scale_y)
-        
-        self.assertEqual(x1_orig, 200)
-        self.assertEqual(y1_orig, 100)
-        self.assertEqual(x2_orig, 600)
-        self.assertEqual(y2_orig, 400)
-    
-    def test_selection_width_height_calculation(self):
-        """Test width and height calculation from coordinates"""
-        x1, y1, x2, y2 = 100, 100, 400, 300
-        
-        width = x2 - x1
-        height = y2 - y1
-        
-        self.assertEqual(width, 300)
-        self.assertEqual(height, 200)
-    
-    def test_minimum_selection_size(self):
-        """Test minimum selection size enforcement"""
-        min_size = 20
-        
-        # Valid selection (exactly at minimum)
-        x1, y1, x2, y2 = 100, 100, 120, 120
-        self.assertTrue((x2 - x1) >= min_size and (y2 - y1) >= min_size)
-        
-        # Invalid selection (too small)
-        x1, y1, x2, y2 = 100, 100, 115, 115
-        self.assertFalse((x2 - x1) >= min_size and (y2 - y1) >= min_size)
-    
-    def test_rectangle_normalization(self):
-        """Test rectangle normalization handles inverted coordinates"""
-        # Inverted rectangle (x2 < x1, y2 < y1)
-        x1, y1, x2, y2 = 200, 150, 50, 50
-        
-        # Normalize
-        norm_x1 = min(x1, x2)
-        norm_y1 = min(y1, y2)
-        norm_x2 = max(x1, x2)
-        norm_y2 = max(y1, y2)
-        
-        self.assertEqual(norm_x1, 50)
-        self.assertEqual(norm_y1, 50)
-        self.assertEqual(norm_x2, 200)
-        self.assertEqual(norm_y2, 150)
-        
-        # Verify dimensions are correct
-        width = norm_x2 - norm_x1
-        height = norm_y2 - norm_y1
-        self.assertEqual(width, 150)
-        self.assertEqual(height, 100)
+from region_geometry import (
+    MIN_SELECTION,
+    Rect,
+    RegionSelection,
+)
 
 
-class TestWindowCaptureCropValidation(unittest.TestCase):
-    """Test cases for WindowCapture crop bounds validation"""
-    
+class TestRect(unittest.TestCase):
+
+    def test_width_and_height(self):
+        r = Rect(10, 20, 110, 120)
+        self.assertEqual((r.width, r.height), (100, 100))
+
+    def test_normalised_swaps_inverted_corners(self):
+        r = Rect(200, 150, 50, 50).normalised()
+        self.assertEqual((r.x1, r.y1, r.x2, r.y2), (50, 50, 200, 150))
+
+    def test_normalise_is_idempotent(self):
+        r = Rect(200, 150, 50, 50).normalised()
+        self.assertEqual(r.normalised(), r)
+
+    def test_contains_interior_point(self):
+        self.assertTrue(Rect(0, 0, 100, 100).contains(50, 50))
+
+    def test_contains_excludes_edges_and_outside(self):
+        r = Rect(0, 0, 100, 100)
+        self.assertFalse(r.contains(0, 50))       # on the edge
+        self.assertFalse(r.contains(150, 50))     # outside
+
+    def test_contains_works_on_inverted_rect(self):
+        self.assertTrue(Rect(100, 100, 0, 0).contains(50, 50))
+
+    def test_corner_detection(self):
+        r = Rect(10, 10, 210, 160)
+        self.assertEqual(r.corner_at(10, 10), "nw")
+        self.assertEqual(r.corner_at(210, 10), "ne")
+        self.assertEqual(r.corner_at(10, 160), "sw")
+        self.assertEqual(r.corner_at(210, 160), "se")
+
+    def test_corner_detection_within_radius(self):
+        r = Rect(10, 10, 210, 160)
+        self.assertEqual(r.corner_at(14, 14), "nw")
+        self.assertIsNone(r.corner_at(110, 85), "centre is not a corner")
+
+    def test_resize_moves_the_named_corner_only(self):
+        r = Rect(0, 0, 100, 100).with_corner_at("se", 200, 200)
+        self.assertEqual((r.x1, r.y1, r.x2, r.y2), (0, 0, 200, 200))
+
+    def test_resize_normalises_when_dragged_past_opposite_corner(self):
+        r = Rect(0, 0, 100, 100).with_corner_at("nw", 150, 150)
+        self.assertLessEqual(r.x1, r.x2)
+        self.assertLessEqual(r.y1, r.y2)
+
+    def test_resize_refuses_to_go_below_minimum(self):
+        original = Rect(0, 0, 100, 100)
+        shrunk = original.with_corner_at("se", 5, 5)
+        self.assertEqual(shrunk, original, "allowed a selection below MIN_SELECTION")
+
+    def test_resize_allows_exactly_minimum(self):
+        r = Rect(0, 0, 100, 100).with_corner_at("se", MIN_SELECTION, MIN_SELECTION)
+        self.assertEqual(r.width, MIN_SELECTION)
+
+    def test_resize_rejects_unknown_corner(self):
+        with self.assertRaises(ValueError):
+            Rect(0, 0, 100, 100).with_corner_at("middle", 10, 10)
+
+    def test_move_within_bounds(self):
+        r = Rect(10, 10, 110, 110).moved_by(20, 30, (500, 500))
+        self.assertEqual((r.x1, r.y1, r.x2, r.y2), (30, 40, 130, 140))
+
+    def test_move_blocked_at_edge_preserves_size(self):
+        r = Rect(0, 0, 100, 100).moved_by(-50, 0, (500, 500))
+        self.assertEqual((r.x1, r.x2), (0, 100), "rect slid outside the preview")
+
+    def test_move_axes_are_independent(self):
+        """Blocked horizontally must still move vertically."""
+        r = Rect(0, 10, 100, 110).moved_by(-50, 20, (500, 500))
+        self.assertEqual(r.x1, 0, "x should be blocked")
+        self.assertEqual(r.y1, 30, "y should still move")
+
+    def test_move_blocked_at_far_edge(self):
+        r = Rect(400, 0, 500, 100).moved_by(50, 0, (500, 500))
+        self.assertEqual((r.x1, r.x2), (400, 500))
+
+
+class TestRegionSelectionScaling(unittest.TestCase):
+
+    def test_small_image_is_not_scaled_up(self):
+        sel = RegionSelection((400, 300), (850, 550))
+        self.assertEqual(sel.scale_factor, 1.0)
+        self.assertEqual(sel.display_size, (400, 300))
+
+    def test_large_image_scaled_to_fit(self):
+        sel = RegionSelection((1600, 1200), (800, 600))
+        self.assertAlmostEqual(sel.scale_factor, 0.5)
+        self.assertEqual(sel.display_size, (800, 600))
+
+    def test_scale_uses_the_more_constrained_axis(self):
+        # Very wide image: width is the limiting factor.
+        sel = RegionSelection((2000, 400), (1000, 600))
+        self.assertAlmostEqual(sel.scale_factor, 0.5)
+
+    def test_zero_size_rejected(self):
+        with self.assertRaises(ValueError):
+            RegionSelection((0, 100), (800, 600))
+
+    def test_display_never_exceeds_the_limit(self):
+        for size in ((3840, 2160), (1024, 4000), (7, 9)):
+            sel = RegionSelection(size, (850, 550))
+            w, h = sel.display_size
+            self.assertLessEqual(w, 850)
+            self.assertLessEqual(h, 550)
+
+
+class TestCoordinateConversion(unittest.TestCase):
+    """The crop must land on the pixels the user framed in the preview."""
+
+    def test_unscaled_conversion_is_identity(self):
+        sel = RegionSelection((400, 300), (850, 550))
+        self.assertEqual(sel.to_original(Rect(50, 50, 200, 150)), (50, 50, 150, 100))
+
+    def test_scaled_conversion_maps_back_to_original_pixels(self):
+        sel = RegionSelection((1600, 1200), (800, 600))   # scale 0.5
+        # A selection covering the middle of the preview...
+        crop = sel.to_original(Rect(100, 100, 300, 250))
+        # ...is twice as large in original coordinates.
+        self.assertEqual(crop, (200, 200, 400, 300))
+
+    def test_round_trip_is_stable(self):
+        sel = RegionSelection((1600, 1200), (800, 600))
+        crop = (200, 160, 480, 280)
+        self.assertEqual(sel.to_original(sel.from_original(crop)), crop)
+
+    def test_round_trip_on_unscaled_image(self):
+        sel = RegionSelection((900, 700), (1000, 1000))
+        crop = (10, 20, 480, 280)
+        self.assertEqual(sel.to_original(sel.from_original(crop)), crop)
+
+    def test_conversion_handles_inverted_selection(self):
+        sel = RegionSelection((400, 300), (850, 550))
+        self.assertEqual(sel.to_original(Rect(200, 150, 50, 50)), (50, 50, 150, 100))
+
+    def test_default_rect_is_centred_and_inside(self):
+        sel = RegionSelection((800, 600), (850, 550))
+        rect = sel.default_rect()
+        w, h = sel.display_size
+        self.assertEqual(rect.x1, w - rect.x2, "not horizontally centred")
+        self.assertEqual(rect.y1, h - rect.y2, "not vertically centred")
+
+    def test_clamp_keeps_pointer_in_the_preview(self):
+        sel = RegionSelection((800, 600), (850, 550))
+        w, h = sel.display_size
+        self.assertEqual(sel.clamp_to_display(-10, -10), (0, 0))
+        self.assertEqual(sel.clamp_to_display(9999, 9999), (w, h))
+
+    def test_cell_size_reflects_the_grid(self):
+        sel = RegionSelection((480, 280), (850, 550))     # unscaled
+        cell_w, cell_h = sel.cell_size(Rect(0, 0, 480, 280), 24, 14)
+        self.assertAlmostEqual(cell_w, 20.0)
+        self.assertAlmostEqual(cell_h, 20.0)
+
+
+class TestCropApplication(unittest.TestCase):
+    """WindowCapture._apply_crop clamps rather than raising."""
+
+    def _capture(self, crop):
+        from window_capture import WindowCapture
+        # Build without __init__: it needs a real HWND.
+        capture = WindowCapture.__new__(WindowCapture)
+        capture.crop_region = crop
+        return capture
+
     def test_crop_within_bounds(self):
-        """Test crop region fully within window bounds"""
-        window_width, window_height = 500, 300
-        crop_x, crop_y, crop_w, crop_h = 10, 10, 480, 280
-        
-        # Validate crop is within bounds
-        self.assertTrue(crop_x >= 0)
-        self.assertTrue(crop_y >= 0)
-        self.assertTrue(crop_x + crop_w <= window_width)
-        self.assertTrue(crop_y + crop_h <= window_height)
-    
-    def test_crop_exceeds_right_bottom(self):
-        """Test crop region exceeding right and bottom bounds"""
-        window_width, window_height = 500, 300
-        crop_x, crop_y, crop_w, crop_h = 100, 100, 500, 300
-        
-        # Crop extends beyond bounds
-        exceeds_right = (crop_x + crop_w) > window_width
-        exceeds_bottom = (crop_y + crop_h) > window_height
-        
-        self.assertTrue(exceeds_right)
-        self.assertTrue(exceeds_bottom)
-        
-        # Calculate adjusted crop
-        adjusted_w = min(crop_w, window_width - crop_x)
-        adjusted_h = min(crop_h, window_height - crop_y)
-        
-        self.assertEqual(adjusted_w, 400)  # 500 - 100
-        self.assertEqual(adjusted_h, 200)  # 300 - 100
-    
-    def test_crop_completely_outside_bounds(self):
-        """Test crop region completely outside window bounds"""
-        window_width, window_height = 500, 300
-        crop_x, crop_y, crop_w, crop_h = 600, 400, 100, 100
-        
-        # Crop starts outside bounds
-        outside = crop_x >= window_width or crop_y >= window_height
-        self.assertTrue(outside)
-    
-    def test_crop_significantly_reduced(self):
-        """Test detection of significantly reduced crop"""
-        window_width, window_height = 500, 300
-        original_w, original_h = 480, 280
-        crop_x, crop_y = 495, 295
-        
-        # Calculate adjusted dimensions
-        adjusted_w = min(original_w, window_width - crop_x)
-        adjusted_h = min(original_h, window_height - crop_y)
-        
-        # Check if crop is significantly smaller (< 50% of requested)
-        is_significantly_reduced = (
-            adjusted_w < original_w * 0.5 or 
-            adjusted_h < original_h * 0.5
-        )
-        
-        self.assertTrue(is_significantly_reduced)
-        self.assertEqual(adjusted_w, 5)
-        self.assertEqual(adjusted_h, 5)
-    
-    def test_crop_bounds_clamping(self):
-        """Test crop coordinate clamping to valid range"""
-        window_width, window_height = 500, 300
-        
-        # Negative coordinates
-        crop_x, crop_y = -10, -5
-        clamped_x = max(0, min(crop_x, window_width - 1))
-        clamped_y = max(0, min(crop_y, window_height - 1))
-        
-        self.assertEqual(clamped_x, 0)
-        self.assertEqual(clamped_y, 0)
-        
-        # Beyond bounds
-        crop_x, crop_y = 600, 400
-        clamped_x = max(0, min(crop_x, window_width - 1))
-        clamped_y = max(0, min(crop_y, window_height - 1))
-        
-        self.assertEqual(clamped_x, 499)
-        self.assertEqual(clamped_y, 299)
-    
-    def test_crop_region_format(self):
-        """Test crop region tuple format (x, y, width, height)"""
-        crop_region = (10, 20, 480, 280)
-        
-        x, y, w, h = crop_region
-        
-        self.assertEqual(x, 10)
-        self.assertEqual(y, 20)
-        self.assertEqual(w, 480)
-        self.assertEqual(h, 280)
-        
-        # Verify we can calculate end coordinates
-        x2 = x + w
-        y2 = y + h
-        
-        self.assertEqual(x2, 490)
-        self.assertEqual(y2, 300)
-    
-    def test_image_slicing_with_crop(self):
-        """Test numpy array slicing for crop application"""
-        # Create test image
-        img = np.random.randint(0, 255, (300, 500, 3), dtype=np.uint8)
-        
-        # Apply crop
-        crop_x, crop_y, crop_w, crop_h = 10, 10, 480, 280
-        cropped = img[crop_y:crop_y+crop_h, crop_x:crop_x+crop_w]
-        
-        # Verify cropped dimensions
-        self.assertEqual(cropped.shape[0], crop_h)  # height
-        self.assertEqual(cropped.shape[1], crop_w)  # width
-        self.assertEqual(cropped.shape[2], 3)  # RGB channels
+        img = np.zeros((600, 800, 3), dtype=np.uint8)
+        out = self._capture((100, 50, 400, 300))._apply_crop(img, 800, 600)
+        self.assertEqual(out.shape, (300, 400, 3))
+
+    def test_crop_clamped_to_window(self):
+        img = np.zeros((600, 800, 3), dtype=np.uint8)
+        out = self._capture((700, 500, 400, 300))._apply_crop(img, 800, 600)
+        self.assertEqual(out.shape, (100, 100, 3))
+
+    def test_crop_entirely_outside_is_ignored(self):
+        img = np.zeros((600, 800, 3), dtype=np.uint8)
+        out = self._capture((900, 700, 100, 100))._apply_crop(img, 800, 600)
+        self.assertEqual(out.shape, img.shape, "expected the crop to be skipped")
+
+    def test_crop_selects_the_right_pixels(self):
+        img = np.zeros((600, 800, 3), dtype=np.uint8)
+        img[50:350, 100:500] = 255
+        out = self._capture((100, 50, 400, 300))._apply_crop(img, 800, 600)
+        self.assertTrue((out == 255).all(), "crop landed on the wrong pixels")
 
 
-class TestEdgeCases(unittest.TestCase):
-    """Test edge cases for screen area selection"""
-    
-    def test_zero_width_crop(self):
-        """Test handling of zero-width crop region"""
-        crop_region = (100, 100, 0, 200)
-        x, y, w, h = crop_region
-        
-        # Zero width should be invalid
-        is_valid = w > 0 and h > 0
-        self.assertFalse(is_valid)
-    
-    def test_zero_height_crop(self):
-        """Test handling of zero-height crop region"""
-        crop_region = (100, 100, 200, 0)
-        x, y, w, h = crop_region
-        
-        # Zero height should be invalid
-        is_valid = w > 0 and h > 0
-        self.assertFalse(is_valid)
-    
-    def test_single_pixel_crop(self):
-        """Test handling of single-pixel crop region"""
-        crop_region = (100, 100, 1, 1)
-        x, y, w, h = crop_region
-        
-        # Single pixel is technically valid but likely not useful
-        is_valid = w > 0 and h > 0
-        self.assertTrue(is_valid)
-        
-        # But should be below minimum size
-        min_size = 20
-        meets_minimum = w >= min_size and h >= min_size
-        self.assertFalse(meets_minimum)
-    
-    def test_maximum_size_crop(self):
-        """Test crop region equal to window size"""
-        window_width, window_height = 500, 300
-        crop_region = (0, 0, window_width, window_height)
-        
-        x, y, w, h = crop_region
-        
-        # Should be valid and fit exactly
-        self.assertTrue(x + w <= window_width)
-        self.assertTrue(y + h <= window_height)
-    
-    def test_aspect_ratio_preservation(self):
-        """Test aspect ratio calculation for crop regions"""
-        # 16:9 aspect ratio
-        crop_w, crop_h = 1600, 900
-        aspect_ratio = crop_w / crop_h
-        
-        self.assertAlmostEqual(aspect_ratio, 16/9, places=2)
-        
-        # 4:3 aspect ratio
-        crop_w, crop_h = 480, 360
-        aspect_ratio = crop_w / crop_h
-        
-        self.assertAlmostEqual(aspect_ratio, 4/3, places=2)
-
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

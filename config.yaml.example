@@ -1,23 +1,30 @@
-mcdu:
-  captain:
-    enabled: true
-  
-  copilot:
-    enabled: false
+# Configuration for the MSFS WinWing CDU Scraper.
+#
+# Which window to capture, and which part of it holds the MCDU screen, are
+# chosen in the GUI - they are not settings. Everything that remains here is
+# about where to send the result and how hard to work.
 
 mobiflight:
+  # Where the MobiFlight WinWing MCDU Connector is listening.
   captain_url: "ws://localhost:8320/winwing/cdu-captain"
+  # Only used when the co-pilot MCDU is enabled under Advanced in the GUI.
   copilot_url: "ws://localhost:8320/winwing/cdu-co-pilot"
-  font: "AirbusThales"
+
+  # Font override. Normally leave this commented out: the aircraft profile
+  # chosen in the GUI already loads the right font (AirbusThales for Airbus,
+  # Boeing for Boeing/UNS-1). Must match one of MobiFlight's own font files -
+  # AirbusThales, Boeing or Collins - an unknown name is silently ignored by
+  # MobiFlight and whatever font was loaded before stays in place.
+  # font: "AirbusThales"
+
+  # Consecutive connection failures tolerated at the base 2s retry delay
+  # before reconnects start backing off exponentially, capped at 30s. The
+  # client never gives up - MobiFlight is often simply not running yet.
   max_retries: 3
 
 performance:
   capture_fps: 30
-  enable_caching: true
 
-# OCR settings (optional — sensible defaults are used if omitted)
-# ocr:
-#   # Template matching threshold (0.0–1.0).  Lower = more permissive.
-#   template_threshold: 0.78
-#   # EasyOCR confidence floor.  Detections below this are discarded.
-#   easyocr_min_confidence: 0.15
+  # Reuse the previous parse when a frame is nearly identical to the last
+  # one. Big CPU saving on a static MCDU page; turn off only when debugging.
+  enable_caching: true

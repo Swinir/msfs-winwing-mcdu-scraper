@@ -28,6 +28,8 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
+from mcdu_charset import OCR_ALLOWLIST, RENDERABLE
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -48,12 +50,13 @@ except ImportError:
 # ---------------------------------------------------------------------------
 #  MCDU character set & OCR fix-up tables
 # ---------------------------------------------------------------------------
-_MCDU_VALID_CHARS = set(
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-    "0123456789"
-    " +-*/.<>[]()/-.:°"
-)
+# The parser accepts exactly what the display can render, and asks EasyOCR
+# for exactly that same set.  See mcdu_charset for why the hardware is the
+# authority here.
+_MCDU_VALID_CHARS = RENDERABLE
 
+# Residual OCR clean-ups for characters the allowlist cannot exclude
+# (case, and lookalikes the engine emits despite the allowlist).
 _OCR_FIXUPS: Dict[str, str] = {
     "l": "1", "|": "1", "!": "1",
     "o": "O", "{": "[", "}": "]",
@@ -61,153 +64,125 @@ _OCR_FIXUPS: Dict[str, str] = {
     "\\": "/",
     "_": "-", "~": "-",
     "\"": " ", "'": " ",
-    "@": "A", "#": "H",
-    "$": "S", "&": "8",
 }
 
-_EASYOCR_ALLOWLIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.+-/<>[]() "
+_EASYOCR_ALLOWLIST = OCR_ALLOWLIST
 
 
 # ---------------------------------------------------------------------------
-#  Structural disambiguation for commonly confused character pairs
+#  Context-based correction for letter/digit confusions
 # ---------------------------------------------------------------------------
+#
+#  This replaces an earlier per-glyph geometry heuristic that inspected
+#  stroke continuity to choose between D/O/0, A/B, B/8 and so on.  Measured
+#  against rendered MCDU pages that heuristic cost 7.4 percentage points of
+#  character accuracy: it relabelled almost every '0' as 'D' and many '8's as
+#  'B', and because it also ran inside learn() those wrong labels became
+#  permanent templates.
+#
+#  MCDU fields are strongly typed, which is a far more reliable signal than
+#  stroke geometry: "N0450", "FL350" and "1204" are numeric, "LFPG" and
+#  "AGOPA" are alphabetic.  A character is judged by the token it sits in.
 
-def _disambiguate_confusables(cell_binary: np.ndarray, char: str) -> str:
-    """Correct EasyOCR / template confusions using glyph geometry.
+#: Letter -> digit, applied inside an otherwise numeric token.
+#: 'L' is deliberately absent.  L->1 is a rare misread, but L is extremely
+#: common in ICAO codes and waypoint names (LFPG, LORNI); treating it as
+#: ambiguous robbed those tokens of the evidence needed to repair them.
+_TO_DIGIT = {"O": "0", "D": "0", "Q": "0", "I": "1",
+             "Z": "2", "S": "5", "G": "6", "B": "8"}
 
-    EasyOCR frequently confuses D↔O, A↔B, B↔8, O↔0, ]↔1, I↔/
-    because these glyphs share a similar outline at low resolution.
-    This function examines specific structural features to pick the
-    correct character.
+#: Digits that a letter could plausibly be misread as.  Used only to judge
+#: whether a token is unambiguously numeric, never to rewrite anything.
+_AMBIGUOUS_DIGITS = frozenset("012588".replace("8", "8"))
+_AMBIGUOUS_DIGITS = frozenset({"0", "1", "2", "5", "8"})
 
-    Called during template *learning* (to prevent poisoning) and
-    during *recognition* output (to fix residual errors).
+#: Characters that end a token.  '.' is deliberately absent: it sits inside
+#: values like 110.30 and M.78, and splitting there loses the digit evidence
+#: that makes the rest of the number correctable.
+_NEUTRAL = set(" /-+:[]()<>*☐←→↑↓Δ")
+
+
+def _map_after_first(token: str, mapping: Dict[str, str]) -> str:
+    """Apply *mapping* to every character except the first.
+
+    The leading character of a token carries identity -- B738 is an aircraft
+    type, not the number 8738, and G5 is not 65.  Correcting only the
+    interior keeps the useful cases (46O -> 460, 4S2 -> 452, FL3SO -> FL350)
+    while leaving those identifiers alone.
     """
-    if char not in ('D', 'O', '0', 'A', 'B', '1', ']', '8', 'I', '/'):
-        return char
+    if not token:
+        return token
+    return token[0] + "".join(mapping.get(c, c) for c in token[1:])
 
-    coords = cv2.findNonZero(cell_binary)
-    if coords is None:
-        return char
-    x, y, bw, bh = cv2.boundingRect(coords)
-    if bw < 3 or bh < 3:
-        return char
-    glyph = cell_binary[y : y + bh, x : x + bw]
-    h, w = glyph.shape
 
-    # ------------------------------------------------------------------
-    #  D vs O  (and 0)
-    # ------------------------------------------------------------------
-    if char in ('D', 'O', '0'):
-        # D has a straight vertical bar on the left that runs the full
-        # height.  O/0 curve away at top-left and bottom-left corners.
-        left_cols = max(2, w // 6)
-        left_strip = glyph[:, :left_cols]
-        rows_with_ink = np.any(left_strip > 0, axis=1)
-        left_continuity = float(np.count_nonzero(rows_with_ink)) / h
-        left_fill = float(np.count_nonzero(left_strip)) / max(left_strip.size, 1)
+def _correct_token(token: str) -> str:
+    """Resolve letter/digit confusions within a single token.
 
-        if left_continuity > 0.88 and left_fill > 0.55:
-            return 'D'
-        elif char == 'D':
-            return 'O'
-        # If char is '0' or 'O' and left is NOT straight, keep as-is
+    Only acts when the token's *other* characters are unambiguous and agree.
+    A token of purely ambiguous characters is left alone -- there is no
+    evidence either way, and guessing is what the old heuristic did wrong.
+    """
+    if len(token) < 2:
+        return token
 
-    # ------------------------------------------------------------------
-    #  A vs B
-    # ------------------------------------------------------------------
-    if char in ('A', 'B'):
-        top_quarter = glyph[: h // 4, :]
-        bot_quarter = glyph[3 * h // 4 :, :]
-        top_ink_cols = np.any(top_quarter > 0, axis=0)
-        bot_ink_cols = np.any(bot_quarter > 0, axis=0)
-        top_span = float(np.count_nonzero(top_ink_cols)) / max(w, 1)
-        bot_span = float(np.count_nonzero(bot_ink_cols)) / max(w, 1)
+    # Count evidence from characters that cannot be confused.
+    digits = sum(1 for c in token
+                 if c.isdigit() and c not in _AMBIGUOUS_DIGITS)
+    letters = sum(1 for c in token if c.isalpha() and c not in _TO_DIGIT)
 
-        if top_span < bot_span * 0.78:
-            return 'A'
-        elif char == 'A' and top_span > bot_span * 0.88:
-            return 'B'
+    if digits >= 1 and letters == 0:
+        return _map_after_first(token, _TO_DIGIT)
 
-    # ------------------------------------------------------------------
-    #  B vs 8
-    # ------------------------------------------------------------------
-    if char in ('B', '8'):
-        # B has a solid vertical bar on the left (like D).
-        # 8 has curves on both sides — the left edge has gaps at the
-        # waist and near corners.
-        left_cols = max(2, w // 5)
-        left_strip = glyph[:, :left_cols]
-        rows_with_ink = np.any(left_strip > 0, axis=1)
-        left_continuity = float(np.count_nonzero(rows_with_ink)) / h
-        left_fill = float(np.count_nonzero(left_strip)) / max(left_strip.size, 1)
+    # There is deliberately no digit -> letter direction.  It was tried, and
+    # on a real MCDU capture it rewrote the nav database date "22JAN" as
+    # "2ZJAN": the J, A and N are unambiguous letters while both 2s are
+    # ambiguous, so the token reads as alphabetic.  Dates in DDMMM form are
+    # common on these pages, and the repair it was meant to provide
+    # (L0RNI -> LORNI) was never observed to be needed.
 
-        if left_continuity > 0.85 and left_fill > 0.45:
-            return 'B'
-        elif char == 'B':
-            return '8'
+    # Mixed token.  The MCDU's common shape is a short alphabetic prefix on a
+    # numeric body -- N0450 (speed), M.78 (mach), FL350 (level).  When the
+    # body is unambiguously numeric, correct it without touching the prefix.
+    head_len = 0
+    while head_len < len(token) and token[head_len].isalpha():
+        head_len += 1
+    if 1 <= head_len <= 2 and head_len < len(token):
+        head, tail = token[:head_len], token[head_len:]
+        tail_digits = sum(1 for c in tail
+                          if c.isdigit() and c not in _AMBIGUOUS_DIGITS)
+        tail_letters = sum(1 for c in tail if c.isalpha() and c not in _TO_DIGIT)
+        if tail_digits >= 1 and tail_letters == 0:
+            return head + _map_after_first(tail, _TO_DIGIT)
 
-    # ------------------------------------------------------------------
-    #  ] vs 1
-    # ------------------------------------------------------------------
-    if char in ('1', ']'):
-        aspect = w / max(h, 1)
-        if aspect < 0.25:
-            # Very narrow — definitely 1, not ]
-            return '1'
-        # ] has a solid right-edge vertical bar running the full height,
-        # with ink in the rightmost columns on nearly every row.
-        # 1 (even with serifs) has its vertical stroke more centred.
-        right_cols = max(2, w // 5)
-        right_strip = glyph[:, -right_cols:]
-        right_rows = np.any(right_strip > 0, axis=1)
-        right_continuity = float(np.count_nonzero(right_rows)) / h
+    return token
 
-        # Also check horizontal centre of mass: ] has it shifted right,
-        # 1 has it near the centre.
-        col_ink = np.sum(glyph > 0, axis=0).astype(float)
-        total_ink = col_ink.sum()
-        if total_ink > 0:
-            com_x = float(np.dot(np.arange(w), col_ink)) / total_ink
-            com_ratio = com_x / max(w - 1, 1)  # 0=left, 1=right
+
+def _correct_row_context(text: str) -> str:
+    """Apply :func:`_correct_token` to every whitespace-separated token."""
+    out = []
+    token = []
+    for char in text:
+        if char in _NEUTRAL:
+            if token:
+                out.append(_correct_token("".join(token)))
+                token = []
+            out.append(char)
         else:
-            com_ratio = 0.5
-
-        # ] : right continuity ~1.0 and COM shifted right (> 0.55)
-        # 1 : COM near centre (0.35–0.55) even with serifs
-        if right_continuity > 0.85 and com_ratio > 0.55:
-            # Also verify the left side is mostly empty in the middle
-            mid_left = glyph[h // 3 : 2 * h // 3, : max(1, w // 3)]
-            mid_left_fill = float(np.count_nonzero(mid_left)) / max(mid_left.size, 1)
-            if mid_left_fill < 0.20:
-                return ']'
-        return '1'
-
-    # ------------------------------------------------------------------
-    #  I vs / (and 1)
-    # ------------------------------------------------------------------
-    if char in ('I', '/'):
-        # / has a strong diagonal: top-right ink, bottom-left ink.
-        # I is vertically symmetric: ink centred on every row.
-        if h > 3 and w > 3:
-            tr = np.count_nonzero(glyph[: h // 2, w // 2 :])
-            bl = np.count_nonzero(glyph[h // 2 :, : w // 2])
-            tl = np.count_nonzero(glyph[: h // 2, : w // 2])
-            br = np.count_nonzero(glyph[h // 2 :, w // 2 :])
-            diag_score = (tr + bl) / max(tl + br + 1, 1)
-            if diag_score > 2.0:
-                return '/'
-            else:
-                return 'I'
-
-    return char
+            token.append(char)
+    if token:
+        out.append(_correct_token("".join(token)))
+    return "".join(out)
 
 
 # ---------------------------------------------------------------------------
 #  Row-level OCR cache  (persists across MCDUParser instances)
+#
+#  Keyed by ``(source_id, row)``.  The captain and co-pilot MCDUs are parsed
+#  in the same process, so keying by row alone made them overwrite each
+#  other's entries — each display would be served the other's cached OCR.
 # ---------------------------------------------------------------------------
-_prev_row_imgs: Dict[int, np.ndarray] = {}
-_prev_row_ocr: Dict[int, list] = {}
+_prev_row_imgs: Dict[Tuple[str, int], np.ndarray] = {}
+_prev_row_ocr: Dict[Tuple[str, int], list] = {}
 _ROW_CHANGE_MSE = 5.0
 
 
@@ -229,14 +204,32 @@ class TemplateMatcher:
     MAX_TEMPLATES = 5          # max variants stored per character
     CONSENSUS_MIN = 2          # min votes to promote a candidate template
 
-    def __init__(self) -> None:
+    #: Bumped whenever the normalisation changes shape-compatibility.
+    #: Templates saved under an older format are discarded on load rather
+    #: than silently compared against glyphs normalised a different way.
+    FORMAT_VERSION = 2
+
+    #: Where learned glyphs are persisted when no explicit path is given.
+    DEFAULT_TEMPLATE_PATH = (
+        Path(__file__).resolve().parent.parent / "templates" / "mcdu_templates.npz"
+    )
+
+    def __init__(self, template_path: Optional[Path] = None) -> None:
+        """
+        Args:
+            template_path: Where to load/save learned glyphs.  Defaults to
+                ``DEFAULT_TEMPLATE_PATH``.  Tests must pass a temp path —
+                otherwise they inherit whatever the user learned by running
+                the app, and their results depend on the host machine.
+        """
         self._hash_cache: Dict[bytes, str] = {}
         self._templates: Dict[str, List[np.ndarray]] = {}
         self._candidates: Dict[bytes, Dict[str, int]] = {}
         self._dirty = False
         self._warmup_complete = False
-        self._template_path = (
-            Path(__file__).resolve().parent.parent / "templates" / "mcdu_templates.npz"
+        self._template_path = Path(
+            template_path if template_path is not None
+            else self.DEFAULT_TEMPLATE_PATH
         )
         self._load()
 
@@ -266,8 +259,11 @@ class TemplateMatcher:
                     best_char = char
 
         if best_score >= self.MATCH_THRESHOLD and best_char is not None:
-            # Correct confusable pairs (D/O, A/B, ]/1) before caching
-            best_char = _disambiguate_confusables(cell_binary, best_char)
+            # Templates are disambiguated once, at learn() time, so the
+            # label attached to a matched template is already correct.
+            # Re-running the geometry heuristic here would let it overrule
+            # what was learned — and it would be inconsistent with the
+            # hash-cache path above, which returns the stored label as-is.
             self._hash_cache[key] = best_char
             return (best_char, best_score)
 
@@ -290,10 +286,6 @@ class TemplateMatcher:
         char = char.upper()
         if len(char) != 1:
             return
-
-        # Correct confusable pairs BEFORE learning so templates are
-        # labelled correctly from the start.
-        char = _disambiguate_confusables(cell_binary, char)
 
         glyph = self._extract_glyph(cell_binary)
         if glyph is None:
@@ -353,7 +345,7 @@ class TemplateMatcher:
             return
         try:
             self._template_path.parent.mkdir(parents=True, exist_ok=True)
-            data = {}
+            data = {"__format__": np.array([self.FORMAT_VERSION])}
             for char, templates in self._templates.items():
                 # Use hex-encoded UTF-8 to handle multi-character keys
                 # (e.g. "<>" from OCR) as well as single characters.
@@ -374,7 +366,20 @@ class TemplateMatcher:
             return
         try:
             data = np.load(str(self._template_path))
+
+            stored_format = int(data["__format__"][0]) if "__format__" in data.files else 1
+            if stored_format != self.FORMAT_VERSION:
+                logger.warning(
+                    "Discarding templates from %s: saved in format v%d, this "
+                    "build normalises glyphs differently (v%d). They will be "
+                    "relearned on the next warmup.",
+                    self._template_path, stored_format, self.FORMAT_VERSION,
+                )
+                return
+
             for key in data.files:
+                if key == "__format__":
+                    continue
                 prefix = key.split("_")[0]
                 if prefix.startswith("h"):
                     # New format: hex-encoded UTF-8
@@ -397,8 +402,30 @@ class TemplateMatcher:
     # ----- helpers -------------------------------------------------------
 
     def _normalize(self, glyph: np.ndarray) -> np.ndarray:
-        resized = cv2.resize(glyph, self.NORM_SIZE, interpolation=cv2.INTER_AREA)
-        _, binary = cv2.threshold(resized, 127, 255, cv2.THRESH_BINARY)
+        """Scale a glyph into NORM_SIZE, preserving its aspect ratio.
+
+        Stretching each glyph to fill the box destroyed the one feature that
+        separates the thin symbols: a dash, a period, an underscore and a
+        solid block all became the same all-white rectangle and matched each
+        other with NCC 1.0.  Scaling by the smaller factor and centring the
+        result on a blank canvas keeps them distinct.
+        """
+        target_w, target_h = self.NORM_SIZE
+        h, w = glyph.shape[:2]
+        if w < 1 or h < 1:
+            return np.zeros((target_h, target_w), dtype=np.uint8)
+
+        scale = min(target_w / w, target_h / h)
+        new_w = max(1, int(round(w * scale)))
+        new_h = max(1, int(round(h * scale)))
+        resized = cv2.resize(glyph, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        canvas = np.zeros((target_h, target_w), dtype=np.uint8)
+        y0 = (target_h - new_h) // 2
+        x0 = (target_w - new_w) // 2
+        canvas[y0:y0 + new_h, x0:x0 + new_w] = resized
+
+        _, binary = cv2.threshold(canvas, 127, 255, cv2.THRESH_BINARY)
         return binary
 
     @staticmethod
@@ -407,9 +434,16 @@ class TemplateMatcher:
         if coords is None:
             return None
         x, y, w, h = cv2.boundingRect(coords)
-        if w < 2 or h < 2:
+        # A hyphen renders as few as 6x1 px in a 20x24 cell.  Requiring 2px
+        # in both axes silently discarded every dash on the display.
+        if w < 1 or h < 1:
             return None
-        return binary[y : y + h, x : x + w]
+        # 1-px padding so glyphs at slightly different positions within
+        # the cell normalise to a consistent shape after resize.
+        H, W = binary.shape
+        pad = 1
+        return binary[max(0, y - pad) : min(H, y + h + pad),
+                      max(0, x - pad) : min(W, x + w + pad)]
 
     @staticmethod
     def _ncc(a: np.ndarray, b: np.ndarray) -> float:
@@ -438,15 +472,39 @@ class TemplateMatcher:
         logger.info("Template matcher reset — all templates cleared")
 
 
-# Singleton
+# Active matcher.  One store is live at a time: glyphs learned from one
+# font must never be matched against another, so switching aircraft profile
+# switches the store (see set_template_store).
 _template_matcher: Optional[TemplateMatcher] = None
+_template_store_path: Optional[Path] = None
 
 
 def _get_template_matcher() -> TemplateMatcher:
     global _template_matcher
     if _template_matcher is None:
-        _template_matcher = TemplateMatcher()
+        _template_matcher = TemplateMatcher(template_path=_template_store_path)
     return _template_matcher
+
+
+def set_template_store(path) -> None:
+    """Make *path* the active learned-glyph store.
+
+    Saves the outgoing store first, and clears the row-level OCR caches:
+    cached results were produced by the old store's glyphs.
+    A no-op when *path* is already active.
+    """
+    global _template_matcher, _template_store_path
+    path = Path(path)
+    if _template_matcher is not None and _template_store_path == path:
+        return
+    if _template_matcher is not None:
+        _template_matcher.save()
+    _template_store_path = path
+    _template_matcher = TemplateMatcher(template_path=path)
+    _prev_row_imgs.clear()
+    _prev_row_ocr.clear()
+    logger.info("Template store switched to %s (%d templates)",
+                path.name, _template_matcher.template_count)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -511,30 +569,68 @@ class MCDUParser:
     INK_THRESHOLD = 80
     MIN_INK_RATIO = 0.008
 
+    #: A cell whose pixels are mostly at foreground brightness is reverse
+    #: video: a coloured block with a dark glyph cut out of it.  The MCDU
+    #: uses it for scratchpad messages, and the UNS-1 for its ACCEPT prompt.
+    #: Measured over 929 cells from six real captures, ordinary cells reach
+    #: at most 40.9% and inverted ones start at 47.8%, so this sits between
+    #: them with roughly three points of margin either side.
+    INVERTED_FILL_RATIO = 0.44
+
     def __init__(self, image: np.ndarray,
-                 columns: int = 24, rows: int = 14) -> None:
+                 columns: int = 24, rows: int = 14,
+                 source_id: str = "default",
+                 small_font_rule: str = "labels_small") -> None:
         self.columns = columns
         self.rows = rows
+        # How rows map to the hardware's large/small font:
+        # "labels_small" (Airbus/Boeing: odd label rows small, last row
+        # large) or "all_large" (UNS-1 style CRTs).
+        self.small_font_rule = small_font_rule
+        # Namespaces the row-level OCR caches.  Every capture source
+        # (captain, co-pilot, ...) must pass a distinct id, otherwise they
+        # share cache entries and serve each other stale rows.
+        self.source_id = source_id
 
-        # Snap to exact multiples so every cell has identical pixel size
-        target_w = (image.shape[1] // columns) * columns
-        target_h = (image.shape[0] // rows) * rows
-        if image.shape[1] != target_w or image.shape[0] != target_h:
-            image = cv2.resize(image, (target_w, target_h),
-                               interpolation=cv2.INTER_AREA)
+        # Partition the image into cells with fractional boundaries instead
+        # of resampling it to an exact multiple of the grid.
+        #
+        # The old code resized the capture so every cell was a whole number
+        # of pixels.  Crop sizes are almost never exact multiples, so nearly
+        # every frame went through cv2.resize, and INTER_AREA blurs thin
+        # glyph strokes.  Worse, the blur depends on the crop size: a crop
+        # one pixel wider than another resamples differently, so templates
+        # learned at one size stopped matching at the other.  Measured on a
+        # rendered page, a single pixel of extra width took recognition from
+        # 100% to 51%.
+        #
+        # Rounded edges give cells that differ by at most a pixel and cost no
+        # interpolation at all.
         self.image = image
+        height, width = image.shape[:2]
 
-        self.cell_width = target_w // columns
-        self.cell_height = target_h // rows
+        self._col_edges = [round(c * width / columns) for c in range(columns + 1)]
+        self._row_edges = [round(r * height / rows) for r in range(rows + 1)]
+
+        # Kept as floats for OCR position mapping, which works in continuous
+        # coordinates rather than whole cells.
+        self.cell_width = width / columns
+        self.cell_height = height / rows
 
         # Per-image background floor (for adaptive thresholding)
         max_ch = np.max(image, axis=2)
         self._bg_floor = int(np.percentile(max_ch, 5))
 
+        # Midpoint between background and glyph brightness, used to tell a
+        # reverse-video cell from an ordinary one.  Taken from the image
+        # rather than fixed, so a dim display is judged on its own terms.
+        peak = float(np.percentile(max_ch, 99))
+        self._mid_level = self._bg_floor + 0.5 * (peak - self._bg_floor)
+
         logger.debug(
             "MCDUParser: %dx%d grid, image %dx%d, "
-            "cell %dx%d px, bg_floor=%d",
-            rows, columns, target_w, target_h,
+            "cell %.2fx%.2f px, bg_floor=%d",
+            rows, columns, width, height,
             self.cell_width, self.cell_height, self._bg_floor,
         )
 
@@ -542,13 +638,13 @@ class MCDUParser:
     #  Cell / row extraction
     # ------------------------------------------------------------------
     def extract_cell(self, row: int, col: int) -> np.ndarray:
-        x = col * self.cell_width
-        y = row * self.cell_height
-        return self.image[y : y + self.cell_height, x : x + self.cell_width]
+        return self.image[
+            self._row_edges[row]:self._row_edges[row + 1],
+            self._col_edges[col]:self._col_edges[col + 1],
+        ]
 
     def _extract_row_image(self, row: int) -> np.ndarray:
-        y = row * self.cell_height
-        return self.image[y : y + self.cell_height, :]
+        return self.image[self._row_edges[row]:self._row_edges[row + 1], :]
 
     # ------------------------------------------------------------------
     #  Colour detection
@@ -560,25 +656,59 @@ class MCDUParser:
         if not np.any(bright_mask):
             return "w"
 
-        r, g, b = np.mean(cell[bright_mask], axis=0).astype(int)
+        bright_pixels = cell[bright_mask]
+        # Median is more robust to stray noise/outlier pixels than mean.
+        r = int(np.median(bright_pixels[:, 0]))
+        g = int(np.median(bright_pixels[:, 1]))
+        b = int(np.median(bright_pixels[:, 2]))
 
-        if r > 180 and g > 180 and b > 180:
+        # Convert to HSV (cell images are RGB from PIL/MSS/WGC).
+        # HSV hue cleanly separates MCDU colours independent of display
+        # brightness or gamma settings.
+        pixel_rgb = np.array([[[r, g, b]]], dtype=np.uint8)
+        hsv = cv2.cvtColor(pixel_rgb, cv2.COLOR_RGB2HSV)[0, 0]
+        h_val = int(hsv[0])   # 0–180 in OpenCV scale
+        s_val = int(hsv[1])   # 0–255
+        v_val = int(hsv[2])   # 0–255
+
+        # White / near-white: low saturation, high value
+        if s_val < 50 and v_val > 150:
             return "w"
-        if r < 120 and g > 140 and b > 140:
+        # Cyan  hue ≈ 90° (OpenCV 90)
+        if 80 <= h_val <= 105 and s_val > 80:
             return "c"
-        if r < 120 and g > 140 and b < 120:
+        # Green hue ≈ 60°
+        if 50 <= h_val <= 82 and s_val > 80:
             return "g"
-        if r > 160 and g > 120 and b < 100:
-            return "a"
-        if r > 140 and g < 100 and b > 140:
-            return "m"
-        if r > 140 and g < 100 and b < 100:
-            return "r"
-        if r > 180 and g > 180 and b < 150:
+        # Yellow hue ≈ 30°, high saturation (checked before amber)
+        if 22 <= h_val <= 42 and s_val > 150:
             return "y"
-        if 60 < r < 160 and 60 < g < 160 and 60 < b < 160:
+        # Amber  hue ≈ 15-25° (orange-amber)
+        if 8 <= h_val <= 28 and s_val > 80:
+            return "a"
+        # Red    hue near 0° or 180°
+        if (h_val <= 12 or h_val >= 165) and s_val > 80:
+            return "r"
+        # Magenta hue ≈ 150°
+        if 130 <= h_val <= 165 and s_val > 80:
+            return "m"
+        # Grey: low saturation, moderate value
+        if s_val < 80 and 40 <= v_val <= 200:
             return "e"
         return "w"
+
+    # ------------------------------------------------------------------
+    #  Reverse video
+    # ------------------------------------------------------------------
+    def is_inverted_cell(self, cell: np.ndarray) -> bool:
+        """True when the cell is a coloured block with a dark glyph in it.
+
+        MobiFlight's display protocol carries this as an optional fourth
+        element per cell, ``[char, colour, size, inverted]``, and the CDU
+        renders it as reverse video.
+        """
+        gray = np.max(cell, axis=2)
+        return float(np.mean(gray > self._mid_level)) > self.INVERTED_FILL_RATIO
 
     # ------------------------------------------------------------------
     #  Empty-cell detection  (adaptive)
@@ -596,16 +726,36 @@ class MCDUParser:
     #  Font-size heuristic
     # ------------------------------------------------------------------
     def is_small_font(self, row: int) -> bool:
-        return (row % 2 == 1) and (row != 13)
+        if self.small_font_rule == "all_large":
+            return False
+        # Label rows sit on odd indices; the last row is the scratchpad and
+        # always renders large.  (Generalises the old "row != 13".)
+        return (row % 2 == 1) and (row != self.rows - 1)
 
     # ------------------------------------------------------------------
     #  Cell preprocessing  (for template matching)
     # ------------------------------------------------------------------
     def _preprocess_cell(self, cell: np.ndarray) -> np.ndarray:
-        """Convert a colour cell to a clean binary image."""
+        """Convert a colour cell to a clean binary image.
+
+        A reverse-video cell is flipped first, so the glyph reads as ink and
+        matches the same learned template as its normal-video twin.  Without
+        that, every inverted character would be learned separately as a
+        filled block with a hole in it.
+        """
         gray = np.max(cell, axis=2)
+        if self.is_inverted_cell(cell):
+            gray = 255 - gray
+        # Per-cell Otsu finds the optimal ink/background split.
+        # It degrades when the cell is near-empty (low variance → very low
+        # threshold that passes noise).  Guard: only accept Otsu values in
+        # the range [half the fixed threshold, 220].
         ink_threshold = self.INK_THRESHOLD + self._bg_floor
-        _, binary = cv2.threshold(gray, ink_threshold, 255, cv2.THRESH_BINARY)
+        otsu_val, binary = cv2.threshold(
+            gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )
+        if otsu_val < ink_threshold * 0.5 or otsu_val > 220:
+            _, binary = cv2.threshold(gray, ink_threshold, 255, cv2.THRESH_BINARY)
         # Small morphological close to fill 1-px gaps in the font
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
@@ -619,15 +769,21 @@ class MCDUParser:
         """
         Prepare an image strip for EasyOCR.
 
-        Pipeline: max-channel → binary threshold → invert (dark-on-light) →
+        Pipeline: max-channel → CLAHE (local contrast normalisation) →
+        midpoint binary threshold → invert (dark-on-light) →
         upscale (cubic) → white padding.
 
-        No blur is applied — it was softening thin strokes (like the
-        middle bar of E) and causing misreads (E → P).
+        CLAHE normalises brightness across the strip so dim rows (grey,
+        low-contrast amber) get the same ink/background separation as
+        bright rows, without blurring thin strokes (CLAHE is not a blur).
         """
         gray = np.max(img, axis=2)
-        ink_threshold = self.INK_THRESHOLD + self._bg_floor
-        _, binary = cv2.threshold(gray, ink_threshold, 255, cv2.THRESH_BINARY)
+        # CLAHE: pushes background → 0, text → 255 independently per tile.
+        # clipLimit=2.0 prevents over-amplifying noise in empty regions.
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        gray = clahe.apply(gray)
+        # After CLAHE a fixed midpoint threshold cleanly separates ink/bg.
+        _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
         binary = cv2.bitwise_not(binary)  # dark-on-light for CRNN
 
         upscaled = cv2.resize(
@@ -771,7 +927,8 @@ class MCDUParser:
 
             glyph_w = x_max - x_min
             glyph_h = y_max - y_min
-            if glyph_w < 2 or glyph_h < 2:
+            # Dashes are legitimately 1px tall; see _extract_glyph.
+            if glyph_w < 1 or glyph_h < 1:
                 return None
 
             aspect = glyph_w / max(glyph_h, 1)
@@ -787,11 +944,15 @@ class MCDUParser:
                 return "."
 
             # --- degree symbol ° ---
+            # A degree symbol is a small circular glyph in the *upper*
+            # portion of the cell (above the text baseline).  A period is
+            # always near the *bottom*.  They share a similar shape so
+            # vertical position is the key discriminator.
             if (glyph_w < cell_w * 0.40 and glyph_h < cell_h * 0.40
                     and fill > 0.20 and y_min < cell_h * 0.30
                     and n_contours <= 2):
                 if 0.20 < fill < 0.65:
-                    return "."
+                    return "°"
 
             # --- dash / minus ---
             if aspect > 2.0 and glyph_h < cell_h * 0.25 and fill > 0.40:
@@ -858,6 +1019,28 @@ class MCDUParser:
             return None
 
     # ------------------------------------------------------------------
+    #  Context corrections
+    # ------------------------------------------------------------------
+    def _apply_context_corrections(self, message_data: List) -> None:
+        """Fix letter/digit confusions in place, one row at a time.
+
+        Applied after assembly so each character is judged against the token
+        it ends up in rather than in isolation.
+        """
+        for row in range(self.rows):
+            base = row * self.columns
+            cells = message_data[base:base + self.columns]
+            if len(cells) < self.columns:
+                break
+            text = "".join(c[0] if c else " " for c in cells)
+            corrected = _correct_row_context(text)
+            if corrected == text:
+                continue
+            for i, char in enumerate(corrected):
+                if cells[i] and cells[i][0] != char:
+                    cells[i][0] = char
+
+    # ------------------------------------------------------------------
     #  Main entry point
     # ------------------------------------------------------------------
     def parse_grid(self) -> List:
@@ -898,7 +1081,10 @@ class MCDUParser:
                     char = self._detect_via_contours(cell) or " "
                     color = self.detect_color(cell)
                     size = 1 if self.is_small_font(row) else 0
-                    message_data.append([char, color, size])
+                    if self.is_inverted_cell(cell):
+                        message_data.append([char, color, size, True])
+                    else:
+                        message_data.append([char, color, size])
             elapsed = time.perf_counter() - t0
             logger.debug("parse_grid (contours only): %.0f ms", elapsed * 1000)
             return message_data
@@ -909,14 +1095,15 @@ class MCDUParser:
 
         for row in non_empty_rows:
             rim = row_images[row]
-            if row in _prev_row_imgs:
-                prev = _prev_row_imgs[row]
+            cache_key = (self.source_id, row)
+            if cache_key in _prev_row_imgs:
+                prev = _prev_row_imgs[cache_key]
                 if prev.shape == rim.shape:
                     mse = float(np.mean(
                         (rim.astype(np.float32) - prev.astype(np.float32)) ** 2
                     ))
                     if mse < _ROW_CHANGE_MSE:
-                        cached_ocr[row] = _prev_row_ocr.get(row, [])
+                        cached_ocr[row] = _prev_row_ocr.get(cache_key, [])
                         continue
             changed_rows.append(row)
 
@@ -962,7 +1149,9 @@ class MCDUParser:
                 # Accumulate per-cell votes across ALL rounds
                 cell_all_votes: Dict[Tuple[int, int], Dict[str, int]] = {}
 
+                _stable_rounds = 0  # consecutive rounds with no new templates
                 for rnd in range(WARMUP_ROUNDS):
+                    _prev_count = matcher.template_count
                     for ws in warmup_scales:
                         # Full-image OCR at this scale
                         full = self._ocr_full_image_easyocr(scale=ws)
@@ -1009,6 +1198,19 @@ class MCDUParser:
                         "  Warmup round %d/%d done — %d templates so far",
                         rnd + 1, WARMUP_ROUNDS, matcher.template_count,
                     )
+                    # Stop early when templates have stabilised (no new
+                    # glyphs learned for 2 consecutive rounds).
+                    if matcher.template_count - _prev_count <= 2:
+                        _stable_rounds += 1
+                        if _stable_rounds >= 2:
+                            logger.info(
+                                "  Warmup converged after %d rounds "
+                                "(templates stable at %d).",
+                                rnd + 1, matcher.template_count,
+                            )
+                            break
+                    else:
+                        _stable_rounds = 0
 
                 # Build display results via majority vote across ALL rounds
                 for row in unmatched_rows:
@@ -1022,8 +1224,8 @@ class MCDUParser:
                             cx = col * self.cell_width + self.cell_width / 2
                             row_chars.append((best, cx))
                     ocr_results[row] = row_chars
-                    _prev_row_imgs[row] = row_images[row].copy()
-                    _prev_row_ocr[row] = row_chars
+                    _prev_row_imgs[(self.source_id, row)] = row_images[row].copy()
+                    _prev_row_ocr[(self.source_id, row)] = row_chars
 
                 matcher._warmup_complete = True
                 logger.info(
@@ -1037,8 +1239,8 @@ class MCDUParser:
                 for row in unmatched_rows:
                     result = full.get(row, [])
                     ocr_results[row] = result
-                    _prev_row_imgs[row] = row_images[row].copy()
-                    _prev_row_ocr[row] = result
+                    _prev_row_imgs[(self.source_id, row)] = row_images[row].copy()
+                    _prev_row_ocr[(self.source_id, row)] = result
             else:
                 for row in unmatched_rows:
                     is_large = not self.is_small_font(row)
@@ -1046,8 +1248,8 @@ class MCDUParser:
                         row_images[row], large_font=is_large,
                     )
                     ocr_results[row] = result
-                    _prev_row_imgs[row] = row_images[row].copy()
-                    _prev_row_ocr[row] = result
+                    _prev_row_imgs[(self.source_id, row)] = row_images[row].copy()
+                    _prev_row_ocr[(self.source_id, row)] = result
 
         # Also cache rows that were fully template-matched
         for row in changed_rows:
@@ -1059,8 +1261,8 @@ class MCDUParser:
                         cx = col * self.cell_width + self.cell_width / 2
                         chars.append((template_results[(row, col)], cx))
                 ocr_results[row] = chars
-                _prev_row_imgs[row] = row_images[row].copy()
-                _prev_row_ocr[row] = chars
+                _prev_row_imgs[(self.source_id, row)] = row_images[row].copy()
+                _prev_row_ocr[(self.source_id, row)] = chars
 
         n_cached = len(cached_ocr)
         n_template = len(changed_rows) - len(unmatched_rows)
@@ -1111,13 +1313,6 @@ class MCDUParser:
                 if not char:
                     char = " "
 
-                # Final structural correction for confusable pairs.
-                # Even if the template matcher returned a char, verify
-                # it against glyph geometry (D/O, A/B, ]/1).
-                if char.strip():
-                    cell_bin_check = self._preprocess_cell(cell_img)
-                    char = _disambiguate_confusables(cell_bin_check, char)
-
                 # Learn ONLY from EasyOCR results (not contour fallbacks).
                 # Contour detection is intentionally conservative for
                 # symbols only; learning from it causes letters like T, A, B
@@ -1130,7 +1325,16 @@ class MCDUParser:
 
                 color = self.detect_color(cell_img)
                 size = 1 if self.is_small_font(row) else 0
-                message_data.append([char, color, size])
+                # detect_color already reports the block's colour for an
+                # inverted cell: it medians the *bright* pixels, which are
+                # the background there rather than the glyph.
+                if self.is_inverted_cell(cell_img):
+                    message_data.append([char, color, size, True])
+                else:
+                    message_data.append([char, color, size])
+
+        # Resolve letter/digit confusions using each row's own token structure.
+        self._apply_context_corrections(message_data)
 
         # Persist templates periodically
         if matcher._dirty:

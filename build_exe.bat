@@ -21,14 +21,12 @@ if exist build rmdir /s /q build
 echo.
 echo Building GUI executable...
 echo ----------------------------------------
-venv\Scripts\pyinstaller --name "MSFS-MCDU-Scraper-GUI" ^
+venv\Scripts\pyinstaller --name "MSFS-CDU-Scraper-GUI" ^
     --onefile ^
     --windowed ^
     --icon=NONE ^
     --paths src ^
     --add-data "config.yaml.example;." ^
-    --hidden-import=PIL ^
-    --hidden-import=PIL._tkinter_finder ^
     --hidden-import=numpy ^
     --hidden-import=cv2 ^
     --hidden-import=yaml ^
@@ -36,31 +34,14 @@ venv\Scripts\pyinstaller --name "MSFS-MCDU-Scraper-GUI" ^
     --hidden-import=win32ui ^
     --hidden-import=win32con ^
     --hidden-import=win32api ^
+    --hidden-import=windows_capture ^
+    --exclude-module=tkinter ^
+    --exclude-module=PyQt5 ^
+    --exclude-module=PyQt6 ^
     src/gui.py
 
 if errorlevel 1 (
     echo [ERROR] GUI build failed!
-    pause
-    exit /b 1
-)
-
-echo.
-echo Building CLI executable...
-echo ----------------------------------------
-venv\Scripts\pyinstaller --name "MSFS-MCDU-Scraper-CLI" ^
-    --onefile ^
-    --console ^
-    --icon=NONE ^
-    --paths src ^
-    --add-data "config.yaml.example;." ^
-    --hidden-import=PIL ^
-    --hidden-import=numpy ^
-    --hidden-import=cv2 ^
-    --hidden-import=yaml ^
-    src/main.py
-    
-if errorlevel 1 (
-    echo [ERROR] CLI build failed!
     pause
     exit /b 1
 )
@@ -78,8 +59,7 @@ set /p create_release="Create release package (y/n)? "
 if /i "%create_release%"=="y" (
     echo Creating release package...
     if not exist release mkdir release
-    xcopy /Y dist\MSFS-MCDU-Scraper-GUI.exe release\
-    xcopy /Y dist\MSFS-MCDU-Scraper-CLI.exe release\
+    xcopy /Y dist\MSFS-CDU-Scraper-GUI.exe release\
     xcopy /Y README.md release\
     xcopy /Y QUICKSTART.md release\
     xcopy /Y LICENSE release\

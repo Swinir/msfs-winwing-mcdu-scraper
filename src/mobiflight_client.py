@@ -8,44 +8,53 @@ import websockets.asyncio.client as ws_client
 import json
 import logging
 
+from mcdu_charset import RENDERABLE, SUBSTITUTIONS, sanitise_char
+
 logger = logging.getLogger(__name__)
 
-# -----------------------------------------------------------------------
-# Characters that the WinWing CDU AirbusThales font can render.
-# Derived from the official MobiFlight Fenix / FBW / Headwind scripts.
-# Sending a character outside this set can freeze the CDU display.
-# -----------------------------------------------------------------------
-_CDU_SAFE_CHARS = set(
-    'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-    '0123456789'
-    ' .-/°<>[]()'
-    '\u2610'   # ☐  ballot box  (small square = selectable field)
-    '\u2190'   # ←  left arrow
-    '\u2192'   # →  right arrow
-    '\u2191'   # ↑  up arrow
-    '\u2193'   # ↓  down arrow
-    '\u0394'   # Δ  delta (overfly)
-)
+# The renderable set and the substitution table live in mcdu_charset so the
+# parser and this client cannot drift apart on what a character may be.
+# Re-exported under the old private names: existing callers and tests use them.
+_CDU_SAFE_CHARS = RENDERABLE
+_CDU_CHAR_MAP = SUBSTITUTIONS
 
-# Map characters that may come out of OCR to CDU-safe equivalents.
-# Anything not in this table *and* not in _CDU_SAFE_CHARS is replaced
-# with a space so the display never receives an unsupported glyph.
-_CDU_CHAR_MAP = {
-    '(': '[',
-    ')': ']',
-    '*': '.',
-    '+': '-',
-    ':': '.',
-    '_': '-',
-    '~': '-',
-    '=': '-',
-    '<': '\u2190',   # ← left arrow (MCDU arrow indicator)
-    '>': '\u2192',   # → right arrow (MCDU arrow indicator)
-}
+
+def sanitise_display_data(display_data: list) -> list:
+    """Map a 336-cell display grid onto glyphs the CDU font can render.
+
+    Any character that is neither in ``_CDU_CHAR_MAP`` nor already in
+    ``_CDU_SAFE_CHARS`` becomes a space, so the CDU never receives an
+    unsupported glyph (which can freeze the display).
+
+    Args:
+        display_data: List of elements, each either ``[]`` or
+            ``[char, colour, size]``.
+
+    Returns:
+        A new list of the same length with every character sanitised.
+    """
+    sanitised = []
+    for cell in display_data:
+        if not cell:
+            sanitised.append([])
+            continue
+        out = [sanitise_char(cell[0]), cell[1], cell[2]]
+        # Optional fourth element: reverse video.  Only sent when set, so
+        # ordinary cells stay three-element as every other integration
+        # sends them.
+        if len(cell) > 3 and cell[3]:
+            out.append(True)
+        sanitised.append(out)
+    return sanitised
 
 
 class MobiFlightClient:
     """WebSocket client for MobiFlight/WinWing CDU communication"""
+
+    #: Delay between the first few reconnect attempts, in seconds.
+    BASE_RETRY_DELAY = 2.0
+    #: Upper bound on the backoff delay, in seconds.
+    MAX_RETRY_DELAY = 30.0
     
     def __init__(self, websocket_uri: str, font: str = "AirbusThales", max_retries: int = 3):
         """
@@ -54,7 +63,11 @@ class MobiFlightClient:
         Args:
             websocket_uri: WebSocket URI (e.g., ws://localhost:8320/winwing/cdu-captain)
             font: Font name to use (default: AirbusThales)
-            max_retries: Maximum connection retry attempts
+            max_retries: Consecutive failures tolerated at the base retry
+                delay before the client starts backing off exponentially.
+                The client never stops trying — MobiFlight is often simply
+                not running yet — so this controls how fast it gives the
+                socket a rest, not whether it gives up.
         """
         self.websocket = None
         self.connected = asyncio.Event()
@@ -90,6 +103,32 @@ class MobiFlightClient:
             self.retries = 0
             self.connected.set()
 
+    def _retry_delay(self) -> float:
+        """Seconds to wait before the next reconnect attempt.
+
+        Retries stay at BASE_RETRY_DELAY while the failure count is within
+        max_retries, then double up to MAX_RETRY_DELAY.  This is what
+        max_retries actually controls: previously it was stored, incremented
+        against, and never read, so a mistyped URL reconnected every two
+        seconds forever and filled the log.
+        """
+        if self.retries <= self.max_retries:
+            return self.BASE_RETRY_DELAY
+        excess = self.retries - self.max_retries
+        return min(self.BASE_RETRY_DELAY * (2 ** excess), self.MAX_RETRY_DELAY)
+
+    def _log_retry(self, reason: str) -> None:
+        """Report a failed connection, escalating once past max_retries."""
+        delay = self._retry_delay()
+        message = (
+            "%s for %s (attempt %d) — retrying in %.0fs"
+        )
+        args = (reason, self.websocket_uri, self.retries, delay)
+        if self.retries > self.max_retries:
+            logger.error(message, *args)
+        else:
+            logger.warning(message, *args)
+
     async def run(self):
         """Connect to MobiFlight WebSocket server and maintain connection.
 
@@ -109,21 +148,18 @@ class MobiFlightClient:
                     pass  # nothing received — that's fine
 
             except websockets.exceptions.ConnectionClosed:
-                logger.warning(f"WebSocket connection closed for {self.websocket_uri}")
                 self.websocket = None
                 self.connected.clear()
                 self.retries += 1
-                await asyncio.sleep(2)
+                self._log_retry("WebSocket connection closed")
+                await asyncio.sleep(self._retry_delay())
 
             except Exception as e:
-                self.retries += 1
-                logger.error(
-                    f"WebSocket error for {self.websocket_uri}: {e}, "
-                    f"retry {self.retries}"
-                )
                 self.websocket = None
                 self.connected.clear()
-                await asyncio.sleep(2)
+                self.retries += 1
+                self._log_retry(f"WebSocket error ({e})")
+                await asyncio.sleep(self._retry_delay())
     
     async def _set_font(self):
         """Send font configuration to WinWing CDU"""
@@ -169,24 +205,11 @@ class MobiFlightClient:
         freeze or blank the display).
 
         Args:
-            display_data: List of 336 elements, each either [] or [char, color, size]
+            display_data: List of 336 elements, each either [] or
+            [char, colour, size] - optionally [char, colour, size, inverted]
+            for reverse video.
         """
-        sanitised = []
-        for cell in display_data:
-            if not cell:
-                sanitised.append([])
-                continue
-            char = cell[0]
-            # Multi-char strings from contour fallback (e.g. "<>", "^v")
-            # — take first character only.
-            if len(char) > 1:
-                char = char[0]
-            # Map to CDU-safe equivalent
-            if char in _CDU_CHAR_MAP:
-                char = _CDU_CHAR_MAP[char]
-            elif char not in _CDU_SAFE_CHARS:
-                char = ' '
-            sanitised.append([char, cell[1], cell[2]])
+        sanitised = sanitise_display_data(display_data)
 
         non_empty = sum(1 for cell in sanitised if cell)
         logger.debug(f"Sending display data: {non_empty}/{len(sanitised)} non-empty cells")

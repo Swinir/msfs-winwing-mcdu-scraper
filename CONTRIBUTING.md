@@ -1,4 +1,4 @@
-# Contributing to MSFS A330 WinWing MCDU Scraper
+# Contributing to MSFS WinWing CDU Scraper
 
 Thank you for your interest in contributing to this project!
 
@@ -106,4 +106,4 @@ Feature requests are welcome! Please:
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the MIT License.
+By contributing, you agree that your contributions will be licensed under the PolyForm Noncommercial License 1.0.0, the same terms as the project.

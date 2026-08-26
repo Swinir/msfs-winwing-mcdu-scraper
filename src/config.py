@@ -1,11 +1,11 @@
 """
-Configuration management for MSFS A330 WinWing MCDU Scraper
+Configuration management for MSFS WinWing CDU Scraper
 """
 
 import os
 import yaml
 import logging
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -23,31 +23,21 @@ class Config:
     FONT_SIZE_LARGE = 0
     FONT_SIZE_SMALL = 1
     
-    # Color codes (MobiFlight Standard)
+    # Colour codes, taken from MobiFlight's own FormatTable in
+    # src/MobiFlightConnector/MobiFlight/Joysticks/WinCtrl/WinCtrlCduController.cs
+    # and the reference headwind_a33_winwing_cdu.py script.
+    # A code outside this table is rendered as grey by the device, not white.
     COLORS = {
-        "w": "white",
-        "c": "cyan",
-        "g": "green",
-        "m": "magenta",
         "a": "amber",
+        "c": "cyan",
+        "e": "grey",
+        "g": "green",
+        "k": "khaki",
+        "m": "magenta",
+        "o": "blue",
         "r": "red",
+        "w": "white",
         "y": "yellow",
-        "e": "grey",  # for disabled/background
-        "o": "brown/blue"  # alternate
-    }
-    
-    # Special characters mapping (from MobiFlight AirbusThales font)
-    SPECIAL_CHARS = {
-        "\xa0": " ",      # Non-breaking space
-        "□": "\u2610",    # Ballot box (small square – selectable field)
-        "[": "\u2610",    # Bracket → ballot box
-        "]": "\u2610",    # Bracket → ballot box
-        "⬦": "°",         # Degree symbol
-        "←": "\u2190",    # Left arrow
-        "→": "\u2192",    # Right arrow
-        "↑": "\u2191",    # Up arrow
-        "↓": "\u2193",    # Down arrow
-        "&": "\u0394",    # Delta symbol (overfly)
     }
     
     def __init__(self, config_path: Optional[str] = None):
@@ -96,45 +86,57 @@ class Config:
             raise
     
     def _validate_config(self):
-        """Validate configuration has required fields"""
-        required_sections = ['mcdu', 'mobiflight', 'performance']
-        for section in required_sections:
+        """Validate configuration has required fields.
+
+        Which window to capture and which part of it to crop are chosen in
+        the GUI, so they are not configuration any more.
+        """
+        for section in ('mobiflight', 'performance'):
             if section not in self.config_data:
-                raise ValueError(f"Missing required configuration section: {section}")
-        
-        # Validate MCDU configuration
-        if 'captain' not in self.config_data['mcdu']:
-            raise ValueError("Missing MCDU captain configuration")
-        
+                raise ValueError(
+                    f"Missing required configuration section: {section}")
+
         logger.info("Configuration validation passed")
     
-    def get_captain_enabled(self) -> bool:
-        """Check if captain MCDU is enabled"""
-        return self.config_data['mcdu']['captain'].get('enabled', False)
-    
-    def get_copilot_enabled(self) -> bool:
-        """Check if copilot MCDU is enabled"""
-        return self.config_data['mcdu'].get('copilot', {}).get('enabled', False)
-    
     def get_captain_url(self) -> str:
-        """Get captain WebSocket URL"""
-        return self.config_data['mobiflight']['captain_url']
-    
+        """Get captain WebSocket URL."""
+        url = self.config_data['mobiflight'].get('captain_url')
+        if not url:
+            raise ValueError(
+                "Missing 'mobiflight.captain_url' in config. "
+                "Please set it to the WinWing CDU captain WebSocket URI "
+                "(e.g. ws://localhost:8320/winwing/cdu-captain)."
+            )
+        return url
+
     def get_copilot_url(self) -> str:
-        """Get copilot WebSocket URL"""
-        return self.config_data['mobiflight']['copilot_url']
-    
-    def get_font(self) -> str:
-        """Get font name"""
-        return self.config_data['mobiflight'].get('font', 'AirbusThales')
+        """Get copilot WebSocket URL."""
+        url = self.config_data['mobiflight'].get('copilot_url')
+        if not url:
+            raise ValueError(
+                "Missing 'mobiflight.copilot_url' in config. "
+                "Please set it to the WinWing CDU co-pilot WebSocket URI "
+                "(e.g. ws://localhost:8320/winwing/cdu-co-pilot)."
+            )
+        return url
+
+    def get_font(self) -> Optional[str]:
+        """Font override, or None to use the aircraft profile's font.
+
+        Each aircraft profile carries the right hardware font (AirbusThales,
+        Boeing, ...), so most users should leave this unset. Setting it here
+        forces one font regardless of profile.
+        """
+        return self.config_data['mobiflight'].get('font') or None
     
     def get_max_retries(self) -> int:
         """Get max WebSocket connection retries"""
         return self.config_data['mobiflight'].get('max_retries', 3)
     
     def get_capture_fps(self) -> int:
-        """Get capture frame rate"""
-        return self.config_data['performance'].get('capture_fps', 30)
+        """Get capture frame rate, clamped to [1, 120]."""
+        raw = self.config_data['performance'].get('capture_fps', 30)
+        return max(1, min(120, int(raw)))
     
     def get_enable_caching(self) -> bool:
         """Check if caching is enabled"""

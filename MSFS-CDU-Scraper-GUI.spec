@@ -6,11 +6,13 @@ a = Analysis(
     pathex=['src'],
     binaries=[],
     datas=[('config.yaml.example', '.')],
-    hiddenimports=['PIL', 'PIL._tkinter_finder', 'numpy', 'cv2', 'yaml', 'win32gui', 'win32ui', 'win32con', 'win32api', 'windows_capture'],
+    hiddenimports=['numpy', 'cv2', 'yaml', 'win32gui', 'win32ui', 'win32con', 'win32api', 'windows_capture'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # The GUI is Qt now; tkinter would otherwise be pulled in and bloat
+    # the bundle. PySide6 is discovered by PyInstaller's own hooks.
+    excludes=['tkinter', 'PyQt5', 'PyQt6'],
     noarchive=False,
     optimize=0,
 )
@@ -22,7 +24,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='MSFS-MCDU-Scraper-GUI',
+    name='MSFS-CDU-Scraper-GUI',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

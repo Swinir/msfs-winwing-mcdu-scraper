@@ -17,18 +17,9 @@ fi
 echo ""
 echo "Building GUI executable..."
 echo "----------------------------------------"
-pyinstaller --clean gui.spec
+pyinstaller --clean "MSFS-CDU-Scraper-GUI.spec"
 if [ $? -ne 0 ]; then
     echo "[ERROR] GUI build failed!"
-    exit 1
-fi
-
-echo ""
-echo "Building CLI executable..."
-echo "----------------------------------------"
-pyinstaller --clean cli.spec
-if [ $? -ne 0 ]; then
-    echo "[ERROR] CLI build failed!"
     exit 1
 fi
 
@@ -38,15 +29,13 @@ echo "Build Complete!"
 echo "============================================================"
 echo ""
 echo "Executables created in dist/ folder:"
-echo "  - MSFS-MCDU-Scraper-GUI.exe"
-echo "  - MSFS-MCDU-Scraper-CLI.exe"
+echo "  - MSFS-CDU-Scraper-GUI.exe"
 echo ""
 
 # Create release package
 echo "Creating release package..."
 mkdir -p release
-cp dist/MSFS-MCDU-Scraper-GUI.exe release/
-cp dist/MSFS-MCDU-Scraper-CLI.exe release/
+cp dist/MSFS-CDU-Scraper-GUI.exe release/
 cp README.md release/
 cp QUICKSTART.md release/
 cp LICENSE release/

@@ -1,8 +1,8 @@
 #!/bin/bash
-# MSFS A330 WinWing MCDU Scraper - GUI Launcher (Linux/Mac)
+# MSFS WinWing CDU Scraper - GUI Launcher (Linux/Mac)
 
 echo "============================================================"
-echo "MSFS A330 WinWing MCDU Scraper - GUI"
+echo "MSFS WinWing CDU Scraper - GUI"
 echo "============================================================"
 echo ""
 

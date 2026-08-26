@@ -4,9 +4,22 @@ opencv-python>=4.8.0
 Pillow>=10.0.0
 websockets>=12.0
 PyYAML>=6.0
+
+# GUI toolkit.  PySide6 is LGPL, which the project's noncommercial licence
+# and the shipped .exe both permit; PyQt would be GPL and would force the
+# whole project to GPL.
+# Upper bound: PySide6 6.11+ needs a newer MSVC runtime than many systems
+# have, and fails with "DLL load failed while importing QtCore". Raise the
+# bound once you have installed the latest VC++ redistributable.
+PySide6>=6.8,<6.11
 pywin32>=306; sys_platform == 'win32'
 
-# Optional — background capture of DirectX windows without pinning on top
+# Required on Windows for MSFS pop-outs.  Was listed as optional, which is
+# why capture used to need the window kept on top: MSFS renders with DirectX,
+# so GDI comes back black, and without this the only remaining backend is mss,
+# which reads screen pixels and captures whatever covers the window.
+# Measured: GDI and WGC both capture correctly while occluded; only WGC also
+# works while minimised; mss captures the covering window instead.
 windows-capture>=1.5.0; sys_platform == 'win32'
 
 # Optional — improves first-run OCR accuracy (template matching takes over after)
