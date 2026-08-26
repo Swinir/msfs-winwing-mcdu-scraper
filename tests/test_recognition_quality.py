@@ -190,8 +190,16 @@ class TestContextCorrection(unittest.TestCase):
     def test_decimals_stay_one_token(self):
         self.assertEqual(_correct_row_context("ILS 11O.3O"), "ILS 110.30")
 
-    def test_waypoint_names_repaired(self):
-        self.assertEqual(_correct_token("L0RNI"), "LORNI")
+    def test_nav_database_dates_are_not_rewritten(self):
+        """Regression from a real capture: 22JAN came back as 2ZJAN.
+
+        J, A and N are unambiguous letters while both 2s are ambiguous, so a
+        digit-to-letter rule read the whole token as alphabetic.  Dates in
+        DDMMM form are common on the nav database pages.
+        """
+        for token in ("22JAN", "19FEB", "19MAR", "01DEC", "22JAN-19FEB"):
+            self.assertEqual(_correct_row_context(token), token,
+                             f"{token} was rewritten")
 
     def test_identifiers_are_left_alone(self):
         """The leading character carries identity and must not be rewritten."""

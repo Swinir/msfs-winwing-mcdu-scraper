@@ -91,8 +91,10 @@ _EASYOCR_ALLOWLIST = OCR_ALLOWLIST
 _TO_DIGIT = {"O": "0", "D": "0", "Q": "0", "I": "1",
              "Z": "2", "S": "5", "G": "6", "B": "8"}
 
-#: Digit -> letter, applied inside an otherwise alphabetic token.
-_TO_LETTER = {"0": "O", "1": "I", "2": "Z", "5": "S", "8": "B"}
+#: Digits that a letter could plausibly be misread as.  Used only to judge
+#: whether a token is unambiguously numeric, never to rewrite anything.
+_AMBIGUOUS_DIGITS = frozenset("012588".replace("8", "8"))
+_AMBIGUOUS_DIGITS = frozenset({"0", "1", "2", "5", "8"})
 
 #: Characters that end a token.  '.' is deliberately absent: it sits inside
 #: values like 110.30 and M.78, and splitting there loses the digit evidence
@@ -124,19 +126,19 @@ def _correct_token(token: str) -> str:
         return token
 
     # Count evidence from characters that cannot be confused.
-    digits = sum(1 for c in token if c.isdigit() and c not in _TO_LETTER)
+    digits = sum(1 for c in token
+                 if c.isdigit() and c not in _AMBIGUOUS_DIGITS)
     letters = sum(1 for c in token if c.isalpha() and c not in _TO_DIGIT)
 
     if digits >= 1 and letters == 0:
         return _map_after_first(token, _TO_DIGIT)
 
-    # The digit -> letter direction needs a stronger majority.  Requiring only
-    # "one unambiguous letter and no unambiguous digits" turned C10 into CIO
-    # and A1 into AI.  Demanding that unambiguous letters outnumber everything
-    # else keeps waypoint repairs (L0RNI -> LORNI) without touching short
-    # letter+number identifiers.
-    if letters >= 1 and digits == 0 and letters > len(token) / 2:
-        return _map_after_first(token, _TO_LETTER)
+    # There is deliberately no digit -> letter direction.  It was tried, and
+    # on a real MCDU capture it rewrote the nav database date "22JAN" as
+    # "2ZJAN": the J, A and N are unambiguous letters while both 2s are
+    # ambiguous, so the token reads as alphabetic.  Dates in DDMMM form are
+    # common on these pages, and the repair it was meant to provide
+    # (L0RNI -> LORNI) was never observed to be needed.
 
     # Mixed token.  The MCDU's common shape is a short alphabetic prefix on a
     # numeric body -- N0450 (speed), M.78 (mach), FL350 (level).  When the
@@ -146,7 +148,8 @@ def _correct_token(token: str) -> str:
         head_len += 1
     if 1 <= head_len <= 2 and head_len < len(token):
         head, tail = token[:head_len], token[head_len:]
-        tail_digits = sum(1 for c in tail if c.isdigit() and c not in _TO_LETTER)
+        tail_digits = sum(1 for c in tail
+                          if c.isdigit() and c not in _AMBIGUOUS_DIGITS)
         tail_letters = sum(1 for c in tail if c.isalpha() and c not in _TO_DIGIT)
         if tail_digits >= 1 and tail_letters == 0:
             return head + _map_after_first(tail, _TO_DIGIT)

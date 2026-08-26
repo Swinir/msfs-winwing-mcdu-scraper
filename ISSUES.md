@@ -246,6 +246,47 @@ and cell sizes differ by at most a pixel.
 
 ---
 
+## #14 — Context correction rewrote nav database dates
+
+**Type:** bug · **Severity:** medium · **Status:** FIXED
+
+Validating against a real MCDU capture caught a false positive in the
+letter/digit context correction added for #12: `22JAN` came back as `2ZJAN`.
+
+`J`, `A` and `N` are unambiguous letters while both `2`s are ambiguous, so
+the token read as alphabetic and the digit-to-letter direction fired.  Dates
+in DDMMM form appear on every nav database page, so this was not an edge case.
+
+The digit-to-letter direction is removed.  Its intended benefit — repairing a
+waypoint like `L0RNI` to `LORNI` — was never observed on real data, while the
+harm was.  The letter-to-digit direction is kept: it repairs the numeric
+fields OCR actually struggles with (`46O` -> `460`, `FL3SO` -> `FL350`) and
+requires unambiguous digits with no unambiguous letters present.
+
+---
+
+## #15 — '+' is dropped on the way to the display
+
+**Type:** open question · **Severity:** medium · **Status:** OPEN
+
+The real capture shows `+0.0/+0.0` on the IDLE/PERF line, confirming that `+`
+appears on genuine A330 MCDU pages.
+
+`mcdu_charset.RENDERABLE` does not include it, so `sanitise_display_data`
+replaces it with a space and the CDU shows ` 0.0/ 0.0`.  The sign is lost.
+
+The renderable set is described as deriving from the official MobiFlight
+Fenix / FBW / Headwind scripts, with a warning that an unsupported glyph can
+freeze the display, so `+` was not added on suspicion alone.  But an MCDU
+font that could not draw `+` would be unable to render standard pages, which
+is strong circumstantial evidence it is supported.
+
+**To resolve:** on real hardware, add `+` to `PUNCTUATION` in
+`src/mcdu_charset.py` and confirm the display renders it rather than
+freezing.  Mapping it to `-` is never acceptable — that inverts the value.
+
+---
+
 ## #9 — Migrate the GUI from Tkinter to PySide6
 
 **Type:** feature · **Severity:** n/a · **Status:** FIXED
