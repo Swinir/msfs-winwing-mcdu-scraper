@@ -221,11 +221,17 @@ class TestRealCaptureRecognition(unittest.TestCase):
         )
         self.assertIn("19FEB-19MAR", row4, f"row 4 read as {row4!r}")
 
-    def test_plus_signs_are_not_turned_into_minus(self):
-        """IDLE/PERF shows +0.0/+0.0; a sign flip here would be silent."""
+    def test_plus_signs_reach_the_display_intact(self):
+        """IDLE/PERF shows +0.0/+0.0, so the sign has to survive the trip.
+
+        Folding '+' onto '-' would invert the value silently; dropping it to
+        a space loses the sign. Both were live behaviours at some point.
+        """
         parsed = self._parse()
-        row12 = [parsed[12 * 24 + c] for c in range(24)]
-        for cell in sanitise_display_data(row12):
+        row12 = sanitise_display_data([parsed[12 * 24 + c] for c in range(24)])
+        text = "".join(cell[0] if cell else " " for cell in row12)
+        self.assertIn("+0.0/+0.0", text, f"row 12 reached the CDU as {text!r}")
+        for cell in row12:
             if cell:
                 self.assertNotEqual(
                     cell[0], "-",

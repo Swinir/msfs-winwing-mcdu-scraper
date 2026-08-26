@@ -31,7 +31,12 @@ DEGREE = "°"
 
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 DIGITS = "0123456789"
-PUNCTUATION = " .-/<>[]()" + DEGREE
+# '+' is here on the evidence of a real A330 capture, which shows +0.0/+0.0
+# on the IDLE/PERF line.  Mapping it to a space lost the sign, and mapping it
+# to '-' would have inverted the value.  If the AirbusThales font turns out
+# not to carry it, move it back to SUBSTITUTIONS as '+': ' ' rather than
+# folding it onto '-'.
+PUNCTUATION = " .-+/<>[]()" + DEGREE
 
 RENDERABLE: FrozenSet[str] = frozenset(
     LETTERS + DIGITS + PUNCTUATION
@@ -58,13 +63,6 @@ SUBSTITUTIONS: Dict[str, str] = {
     "(": "[",
     ")": "]",
     "*": ".",
-    # '+' must NOT map to '-'.  The MCDU shows '+' in temperature and
-    # vertical-speed fields, and folding it onto '-' inverts the sign: the
-    # display would read -15 for a real +15.  Dropping the glyph is wrong but
-    # obviously wrong; inverting it is wrong and looks correct.
-    # TODO: verify against real hardware whether AirbusThales renders '+'.
-    # If it does, add '+' to PUNCTUATION and remove this entry.
-    "+": " ",
     ":": ".",
     "_": "-",
     "~": "-",

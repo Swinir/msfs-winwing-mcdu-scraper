@@ -267,7 +267,7 @@ requires unambiguous digits with no unambiguous letters present.
 
 ## #15 — '+' is dropped on the way to the display
 
-**Type:** open question · **Severity:** medium · **Status:** OPEN
+**Type:** bug · **Severity:** medium · **Status:** FIXED — needs confirming on hardware
 
 The real capture shows `+0.0/+0.0` on the IDLE/PERF line, confirming that `+`
 appears on genuine A330 MCDU pages.
@@ -281,9 +281,13 @@ freeze the display, so `+` was not added on suspicion alone.  But an MCDU
 font that could not draw `+` would be unable to render standard pages, which
 is strong circumstantial evidence it is supported.
 
-**To resolve:** on real hardware, add `+` to `PUNCTUATION` in
-`src/mcdu_charset.py` and confirm the display renders it rather than
-freezing.  Mapping it to `-` is never acceptable — that inverts the value.
+`+` has been added to `PUNCTUATION`, so it now passes through to the display
+and appears in the EasyOCR allowlist.
+
+**Still to confirm on hardware:** open an IDLE/PERF page and check the CDU
+renders `+0.0/+0.0` rather than freezing.  If the font turns out not to carry
+the glyph, move it back into `SUBSTITUTIONS` as `"+": " "` — never as
+`"+": "-"`, which inverts the value while looking correct.
 
 ---
 
