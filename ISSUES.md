@@ -566,6 +566,41 @@ narrower.
 
 ---
 
+## #24 — Fokker 70/100: row pitch broken by label/value spacing
+
+**Type:** bug · **Severity:** medium · **Status:** FIXED
+
+The Just Flight Fokker 70/100 capture detected with its rows compressed —
+pitch 19.6px against a true 21.7 — so neighbouring rows bled into one
+another and read identically.
+
+Cause: on this FMC a label row sits closer to its value row than a uniform
+pitch implies, because the small font's glyphs are centred differently
+within their cell.  Centre-to-centre gaps therefore alternate 26px and 17px,
+and choosing the pitch by the most common gap picks one of the two rather
+than their 21.7px average.
+
+Several estimators were tried against all seven captures.  Each one that
+fixed the Fokker broke something else: the median of gaps got the Fokker
+right but pushed the ATR from 23.6 to 25.8; total-span-over-total-cells got
+six of seven within 2.7% but the Avro 12% wrong, because two of its bands
+are split spuriously and contribute sub-cell gaps.
+
+Rather than tune a threshold until every capture happened to pass — the
+mistake made in #22 — the detector now computes **both** candidate pitches
+and keeps whichever puts more text rows wholly inside a cell.  That decides
+per capture against the thing that actually matters, and cannot regress a
+display the existing estimator already handles.  Verified: all six earlier
+captures detect byte-identically, and the Fokker now gets 21.71.
+
+The Fokker profile itself (24x14, `labels_small`, green monochrome) reads
+its page back at 336/336 occupancy and 119/119 characters, slashed zeros
+included.  Its column count is the 24-column CDU convention rather than a
+measurement: the pages captured so far use only about 17 columns, so the
+display's true width cannot be read off them.
+
+---
+
 ## #9 — Migrate the GUI from Tkinter to PySide6
 
 **Type:** feature · **Severity:** n/a · **Status:** FIXED

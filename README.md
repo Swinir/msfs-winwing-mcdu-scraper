@@ -88,6 +88,7 @@ the **Aircraft** dropdown:
 | Airbus MCDU | 24x14 | AirbusThales | Default/iniBuilds A320neo, A321, A330 (MSFS 2020/2024); LatinVFR & Horizon Sim Airbuses; Headwind A330-900 without SimBridge |
 | ATR MCDU | 24x14 | AirbusThales | ATR 42-600 / 72-600 (Thales FMS 220, MSFS 2020 Expert Series & 2024) |
 | Boeing CDU | 24x14 | Boeing | Default 747-8 and 787; C-17, E-7 (MSFS 2024) |
+| Fokker 70/100 FMC | 24x14 | Boeing | Just Flight Fokker 70 / 100 (Honeywell/Pegasus), green monochrome CRT |
 | Avro RJ / BAe 146 GNLU | 25x14 | Boeing | Just Flight Avro RJ (GNLU) — one column wider than the hardware; rows are squeezed by dropping blank cells |
 | UNS-1 (experimental) | 24x11 | Boeing | Working Title UNS-1 (Black Square TBM 850, Dukes, King Air); Just Flight BAe 146 / F28 UNS-1 |
 | Custom grid | you choose | AirbusThales | Anything else (GNS-XLS, CMA-900, …) — set the grid under Advanced |

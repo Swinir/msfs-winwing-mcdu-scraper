@@ -99,6 +99,21 @@ PROFILES: Dict[str, AircraftProfile] = {
             template_filename="mcdu_templates_boeing.npz",
         ),
         AircraftProfile(
+            id="fokker",
+            label="Fokker 70/100 FMC  (Just Flight, Honeywell/Pegasus)",
+            columns=24,
+            rows=14,
+            font="Boeing",
+            template_filename="mcdu_templates_fokker.npz",
+            notes=(
+                "Green monochrome CRT with the usual label/value row pairs. "
+                "Row count and pitch are measured; the column count is the "
+                "24-column CDU convention, since the pages captured so far "
+                "use only about 17 of them. Correct it under Advanced > "
+                "Override grid size if text lands in the wrong columns."
+            ),
+        ),
+        AircraftProfile(
             id="avro_gnlu",
             label="Avro RJ / BAe 146 GNLU  (Just Flight)",
             columns=25,

@@ -229,6 +229,37 @@ def _refine_pitch_over_baselines(per_row, pitch: float) -> float:
     return refined
 
 
+def _pitch_by_total_span(gaps: np.ndarray, seed: float) -> Optional[float]:
+    """Cell pitch as total span divided by total cells.
+
+    Each gap is a whole number of cells, so summing the gaps and dividing by
+    the summed cell counts averages the estimate over the entire column of
+    text.  This survives what the per-gap mode does not: a display whose
+    label rows sit closer to their value rows than a uniform pitch implies.
+    On the Fokker F70 those gaps alternate 26px and 17px, and the mode picks
+    one of the two instead of the 21.7px average.
+    """
+    if gaps.size == 0 or seed < 2:
+        return None
+    pitch = seed
+    for _ in range(3):
+        counts = np.maximum(1.0, np.round(gaps / pitch))
+        total = float(counts.sum())
+        if total <= 0:
+            return None
+        pitch = float(gaps.sum() / total)
+        if pitch < 2:
+            return None
+    return pitch
+
+
+def _rows_uncut(bounds, origin: float, pitch: float, n_cells: int) -> int:
+    """How many text rows sit wholly inside one cell of this grid."""
+    edges = [origin + i * pitch for i in range(n_cells + 1)]
+    return sum(1 for top, bottom in bounds
+               if not any(top < edge < bottom for edge in edges))
+
+
 def _choose_origin(centers, pitch: float, n_cells: int,
                    lo: float, hi: float) -> float:
     """Place the grid origin on the lattice so that it covers all the text."""
@@ -283,9 +314,27 @@ def _detect_via_pitch(image: np.ndarray, columns: int,
         return None
 
     row_centers = [(top + bottom) / 2.0 for top, bottom in row_bounds]
-    row_pitch = _pitch_from_spacings(np.diff(np.asarray(row_centers, float)))
+    row_gaps = np.diff(np.asarray(row_centers, float))
+    row_pitch = _pitch_from_spacings(row_gaps)
     if row_pitch is None:
         return None
+
+    # Two candidate pitches, judged by the only thing that matters: how many
+    # text rows end up wholly inside a cell.  Picking by a fixed rule instead
+    # meant every display that suited one estimator broke the other; this
+    # decides per capture and cannot regress one that already works.
+    alternative = _pitch_by_total_span(row_gaps, float(np.median(row_gaps)))
+    if alternative is not None and abs(alternative - row_pitch) > 0.5:
+        best_pitch, best_score = row_pitch, -1
+        for candidate in (row_pitch, alternative):
+            centers, refined = _fit_lattice(row_centers, candidate)
+            origin = _choose_origin(centers, refined, rows,
+                                    row_bounds[0][0], row_bounds[-1][1] + 1)
+            score = _rows_uncut(row_bounds, origin, refined, rows)
+            if score > best_score:
+                best_pitch, best_score = candidate, score
+        row_pitch = best_pitch
+
     row_centers, row_pitch = _fit_lattice(row_centers, row_pitch)
 
     per_row = _glyph_centers_per_row(mask, row_bounds)
