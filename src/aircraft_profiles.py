@@ -92,11 +92,25 @@ PROFILES: Dict[str, AircraftProfile] = {
         ),
         AircraftProfile(
             id="boeing",
-            label="Boeing CDU  (747-8, 787, C-17, E-7, GNLU910)",
+            label="Boeing CDU  (747-8, 787, C-17, E-7)",
             columns=24,
             rows=14,
             font="Boeing",
             template_filename="mcdu_templates_boeing.npz",
+        ),
+        AircraftProfile(
+            id="avro_gnlu",
+            label="Avro RJ / BAe 146 GNLU  (Just Flight)",
+            columns=25,
+            rows=14,
+            font="Boeing",
+            template_filename="mcdu_templates_avro.npz",
+            notes=(
+                "Measured at 25 columns - one more than the WinWing "
+                "hardware. Each row is squeezed by dropping blank cells, "
+                "preferring trailing and leading ones, so the line-select "
+                "prompts at both edges survive."
+            ),
         ),
         AircraftProfile(
             id="uns1",

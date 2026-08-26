@@ -507,6 +507,45 @@ model from the current one and wants doing deliberately, not bolted on.
 
 ---
 
+## #23 — ATR, Avro GNLU and Starship captures: measurements and fixes
+
+**Type:** feature/bug · **Severity:** n/a · **Status:** DONE (Starship out of scope)
+
+Three more aircraft measured from real pop-out captures.
+
+**ATR 42/72-600 (FMS 220)** — a true 24x14 Thales grid; the existing `atr`
+profile was already right.  Result on the INIT page through the auto-detected
+crop: 336/336 occupancy, 147/147 recognition, `+01H00` cyan intact.  Getting
+there surfaced three detector bugs, each with a one-capture reproduction:
+
+- *Dark chrome passed the ink filter.* The old rule assumed window chrome is
+  light; chrome rows are now identified by elevated background and flattened
+  before the ink pass (mask-after ate the title row flush beneath them).
+- *Chrome bled into the top of row 0.* The lattice may legally start a few px
+  inside the title bar (glyphs sit top-of-cell); the crop is now clamped to
+  the chrome boundary when the trim is under a third of a cell.
+- *A 1px edge run and a sparse frame band skewed the fit.* Glyph runs now
+  need >=2px width; near-empty wide bands are rejected as frame debris.
+
+**Just Flight Avro RJ (GNLU)** — renders **25 columns**, one more than the
+hardware.  Also re-confirmed the adjacent-spacings pitch bias from #22, fixed
+this time by refining over whole-line spans (glyphs are centred in cells, so
+first-to-last run distance is an exact cell multiple).  New `avro_gnlu`
+profile (25x14, own template store); rows are squeezed onto the 24-column
+hardware by dropping blank cells - trailing, then leading, then from the
+widest interior gap - so `<` and `>` line-select prompts at both edges
+survive.  Losing *something* on full rows is unavoidable; those truncate
+right.
+
+**Black Square Starship (FMS-850)** — measured at roughly 50 columns, about
+twice the hardware's width, and **not supported**.  It was mis-filed as
+UNS-1 in the original aircraft list; the other Black Square aircraft use the
+Working Title UNS-1 and are covered by that profile.  A test pins the
+measurement so the claim gets revisited if a future capture measures
+narrower.
+
+---
+
 ## #9 — Migrate the GUI from Tkinter to PySide6
 
 **Type:** feature · **Severity:** n/a · **Status:** FIXED

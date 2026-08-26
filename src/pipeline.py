@@ -100,23 +100,66 @@ HARDWARE_COLUMNS = 24
 HARDWARE_ROWS = 14
 
 
-def pad_to_hardware(cells: list, columns: int, rows: int) -> list:
-    """Place a columns x rows grid into the fixed 24x14 hardware grid.
+def _squeeze_row(row: list, target: int) -> list:
+    """Reduce a row to *target* cells by dropping blanks, content last.
 
-    Anchored top-left: the UNS-1 style displays put their content at the top,
-    and MobiFlight expects exactly HARDWARE_COLUMNS * HARDWARE_ROWS cells.
-    A full-size grid passes through untouched.
+    Preference order: trailing blanks, then leading blanks, then one cell
+    out of the widest interior blank gap (which keeps the left- and
+    right-aligned fields of a line as close to their columns as possible).
+    Only when a row is completely full does content get truncated, from the
+    right.
+    """
+    row = list(row)
+    excess = len(row) - target
+    while excess and row and not row[-1]:
+        row.pop()
+        excess -= 1
+    while excess and row and not row[0]:
+        row.pop(0)
+        excess -= 1
+    while excess:
+        # Widest run of empty cells, drop one from its middle.
+        best_start, best_len, start = -1, 0, None
+        for i, cell in enumerate(row + [["x"]]):    # sentinel ends a run
+            if not cell and start is None:
+                start = i
+            elif cell and start is not None:
+                if i - start > best_len:
+                    best_start, best_len = start, i - start
+                start = None
+        if best_len == 0:
+            row = row[:target]
+            break
+        row.pop(best_start + best_len // 2)
+        excess -= 1
+    return row + [[]] * (target - len(row))
+
+
+def pad_to_hardware(cells: list, columns: int, rows: int) -> list:
+    """Fit a columns x rows grid onto the fixed 24x14 hardware grid.
+
+    Smaller grids are padded top-left with empty cells.  A grid *wider* than
+    the hardware - the Just Flight GNLU910 renders 25 columns - is squeezed
+    per row by dropping blank cells (see _squeeze_row), so the line-select
+    prompts at both edges survive.  Extra rows are dropped from the bottom.
+    MobiFlight always receives exactly HARDWARE_COLUMNS * HARDWARE_ROWS
+    cells.
     """
     if columns == HARDWARE_COLUMNS and rows == HARDWARE_ROWS:
         return cells
     out = []
     for row in range(HARDWARE_ROWS):
-        for col in range(HARDWARE_COLUMNS):
-            if row < rows and col < columns:
-                index = row * columns + col
-                out.append(cells[index] if index < len(cells) else [])
-            else:
-                out.append([])
+        if row >= rows:
+            out.extend([[]] * HARDWARE_COLUMNS)
+            continue
+        start = row * columns
+        line = list(cells[start:start + columns])
+        line += [[]] * (columns - len(line))
+        if columns > HARDWARE_COLUMNS:
+            line = _squeeze_row(line, HARDWARE_COLUMNS)
+        else:
+            line += [[]] * (HARDWARE_COLUMNS - columns)
+        out.extend(line)
     return out
 
 

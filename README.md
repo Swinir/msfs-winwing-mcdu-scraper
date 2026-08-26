@@ -87,12 +87,15 @@ the **Aircraft** dropdown:
 |---|---|---|---|
 | Airbus MCDU | 24x14 | AirbusThales | Default/iniBuilds A320neo, A321, A330 (MSFS 2020/2024); LatinVFR & Horizon Sim Airbuses; Headwind A330-900 without SimBridge |
 | ATR MCDU | 24x14 | AirbusThales | ATR 42-600 / 72-600 (Thales FMS 220, MSFS 2020 Expert Series & 2024) |
-| Boeing CDU | 24x14 | Boeing | Default 747-8 and 787; C-17, E-7 (MSFS 2024); GNLU910-style FMS |
-| UNS-1 (experimental) | 24x10* | Boeing | Black Square fleet (TBM 850, Dukes, King Air, Starship); Just Flight BAe 146 / F28 UNS-1 |
+| Boeing CDU | 24x14 | Boeing | Default 747-8 and 787; C-17, E-7 (MSFS 2024) |
+| Avro RJ / BAe 146 GNLU | 25x14 | Boeing | Just Flight Avro RJ (GNLU) — one column wider than the hardware; rows are squeezed by dropping blank cells |
+| UNS-1 (experimental) | 24x11 | Boeing | Working Title UNS-1 (Black Square TBM 850, Dukes, King Air); Just Flight BAe 146 / F28 UNS-1 |
 | Custom grid | you choose | AirbusThales | Anything else (GNS-XLS, CMA-900, …) — set the grid under Advanced |
 
-*The UNS-1 grid size is a best guess pending real captures; correct it under
-**Advanced → Override grid size** if rows land in the wrong cells.
+The UNS-1 grid is measured from real captures, but the display is only
+approximately a uniform grid, so drag the capture box yourself rather than
+relying on Auto Detect there. The Black Square **Starship** is *not*
+supported: its FMS-850 renders roughly twice the hardware's width.
 
 Grids smaller than the hardware's 24x14 are padded top-left. Each profile
 keeps its own learned-glyph store, so switching aircraft never corrupts

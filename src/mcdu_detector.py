@@ -49,6 +49,9 @@ _INK_CONTRAST = 40
 _RULE_MAX_THICKNESS = 6
 _RULE_MIN_SOLIDITY = 0.92
 
+#: Below this occupancy a band is frame debris rather than text.
+_NOISE_MAX_SOLIDITY = 0.04
+
 
 def _ink_mask(image: np.ndarray) -> Optional[np.ndarray]:
     """Ink that sits on a dark background.
@@ -64,18 +67,36 @@ def _ink_mask(image: np.ndarray) -> Optional[np.ndarray]:
     kernel = max(5, (min(height, width) // 20) | 1)
     background = cv2.medianBlur(gray, kernel)
 
+    # Remove window chrome by its background, not its brightness.  The old
+    # Otsu rule assumed chrome is light; a dark-mode title bar (background
+    # 78-106) passed it and the grid stretched up over the window title.
+    # Measured across seven captures, screen ink sits on background 0-18 and
+    # chrome ink on 78-203, so rows whose background clearly exceeds the
+    # dominant level are chrome.
+    #
+    # Chrome rows are *flattened to the dominant level* before the ink pass
+    # rather than masked after it: the median blur straddles the boundary,
+    # so a title line flush under the chrome inherits an inflated local
+    # background and a mask-after approach silently ate the MCDU's top row.
+    dominant = float(np.median(background))
+    row_background = np.median(background, axis=1)
+    chrome_rows = row_background > dominant + 40
+
+    if chrome_rows.any():
+        flattened = gray.copy()
+        flattened[chrome_rows] = int(dominant)
+        background = cv2.medianBlur(flattened, kernel)
+        gray = flattened
+
     ink = (gray.astype(np.int16) - background.astype(np.int16)) > _INK_CONTRAST
     if not ink.any():
         return None
 
-    threshold, _ = cv2.threshold(background, 0, 255,
-                                 cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    on_dark = ink & (background < threshold)
-
-    # If almost nothing survives, the capture is probably the screen alone
-    # with no chrome to exclude; keep the unfiltered ink instead.
-    if on_dark.sum() > ink.sum() * 0.3:
-        return on_dark
+    # Whatever chrome the row rule could not catch (a floating dialog, a
+    # side panel) still sits on an elevated background; drop that ink too.
+    on_screen = ink & (background <= dominant + 40)
+    if on_screen.sum() > ink.sum() * 0.3:
+        return on_screen
     return ink
 
 
@@ -105,6 +126,11 @@ def _text_rows(mask: np.ndarray) -> List[Tuple[int, int]]:
         if (solidity > _RULE_MIN_SOLIDITY
                 and (bottom - top + 1) <= _RULE_MAX_THICKNESS):
             continue
+        # The opposite extreme: a few stray pixels spanning a wide extent is
+        # a window edge or resize grip, not a line of text.  One such band
+        # at the bottom of an ATR capture dragged the grid past the screen.
+        if solidity < _NOISE_MAX_SOLIDITY:
+            continue
         kept.append((top, bottom))
     return kept
 
@@ -122,13 +148,17 @@ def _glyph_centers_per_row(mask: np.ndarray,
     for top, bottom in rows:
         projection = mask[top:bottom + 1, :].sum(axis=0)
         centers, start = [], None
+        # Runs a single pixel wide are edge debris, not glyphs: one at x=0
+        # on an ATR capture became a phantom column centre and dragged the
+        # grid origin to the window border, three cells left of the text.
         for i, has_ink in enumerate(projection > 0):
             if has_ink and start is None:
                 start = i
             elif not has_ink and start is not None:
-                centers.append((start + i - 1) / 2.0)
+                if i - start >= 2:
+                    centers.append((start + i - 1) / 2.0)
                 start = None
-        if start is not None:
+        if start is not None and len(projection) - start >= 2:
             centers.append((start + len(projection) - 1) / 2.0)
         if len(centers) >= 2:
             per_row.append(centers)
@@ -167,6 +197,38 @@ def _pitch_from_spacings(spacings: np.ndarray) -> Optional[float]:
     return pitch if pitch >= 2 else None
 
 
+def _refine_pitch_over_baselines(per_row, pitch: float) -> float:
+    """Correct the pitch using whole-line spans instead of adjacent gaps.
+
+    Adjacent glyph spacings are a biased ruler: glyphs that touch merge into
+    one run and glyphs with internal gaps split into two, and the median
+    lands a few percent low.  On a GNLU910 capture that gave 15.12px against
+    a true ~15.8 - across 24 columns the crop ended 36px early and cut the
+    page's right-hand column off.
+
+    Glyphs are centred in their cells, so the distance between the first and
+    last run centres of a line is an exact whole number of cells.  Dividing
+    each line's span by that (rounded) count divides the bias by the count;
+    the initial pitch is only trusted to pick the integer.
+    """
+    estimates = []
+    for centers in per_row:
+        if len(centers) < 2:
+            continue
+        span = centers[-1] - centers[0]
+        cells = int(round(span / pitch))
+        if cells >= 6:
+            estimates.append(span / cells)
+    if not estimates:
+        return pitch
+    refined = float(np.median(estimates))
+    # A wild disagreement means some line's cell count was rounded wrongly;
+    # in that case the original estimate is the safer one.
+    if abs(refined - pitch) > pitch * 0.15:
+        return pitch
+    return refined
+
+
 def _choose_origin(centers, pitch: float, n_cells: int,
                    lo: float, hi: float) -> float:
     """Place the grid origin on the lattice so that it covers all the text."""
@@ -182,6 +244,30 @@ def _choose_origin(centers, pitch: float, n_cells: int,
             continue
         return origin
     return phase + np.floor((lo - phase) / pitch) * pitch
+
+
+def _chrome_bottom(image: np.ndarray) -> int:
+    """First image row below the window title bar, or 0 when there is none.
+
+    Only a contiguous elevated-background block starting at the very top
+    counts: that is what a title bar is.  Bright content elsewhere on the
+    screen must not be mistaken for chrome.
+    """
+    gray = np.max(image, axis=2) if image.ndim == 3 else image
+    height, width = gray.shape[:2]
+    kernel = max(5, (min(height, width) // 20) | 1)
+    background = cv2.medianBlur(gray, kernel)
+    dominant = float(np.median(background))
+    elevated = np.median(background, axis=1) > dominant + 40
+
+    if not elevated[:3].any():
+        return 0
+    bottom = 0
+    for row_is_chrome in elevated:
+        if not row_is_chrome:
+            break
+        bottom += 1
+    return bottom
 
 
 def _detect_via_pitch(image: np.ndarray, columns: int,
@@ -209,6 +295,7 @@ def _detect_via_pitch(image: np.ndarray, columns: int,
     col_pitch = _pitch_from_spacings(spacings)
     if col_pitch is None:
         return None
+    col_pitch = _refine_pitch_over_baselines(per_row, col_pitch)
     col_centers = sorted(c for centers in per_row for c in centers)
     col_centers, col_pitch = _fit_lattice(col_centers, col_pitch)
 
@@ -222,6 +309,19 @@ def _detect_via_pitch(image: np.ndarray, columns: int,
     x = int(round(_choose_origin(col_centers, col_pitch, columns, x_lo, x_hi)))
     y = int(round(_choose_origin(row_centers, row_pitch, rows, y_lo, y_hi)))
     x, y = max(0, x), max(0, y)
+
+    # The screen often sits flush under the title bar, and the lattice can
+    # legitimately place row 0's top a few pixels inside the chrome - the
+    # glyphs are top-aligned in their cells, so the phase allows it.  Those
+    # pixels are bright, and once inside the crop they ink the top of every
+    # column: on an ATR capture the whole first row read as occupied.  Trim
+    # the crop to the chrome boundary when the trim is a small fraction of a
+    # cell; a larger overlap means the fit is wrong, and trimming would only
+    # disguise it.
+    chrome = _chrome_bottom(image)
+    if y < chrome and (chrome - y) <= row_pitch * 0.35:
+        y = chrome
+
     w = min(int(round(columns * col_pitch)), width - x)
     h = min(int(round(rows * row_pitch)), height - y)
 

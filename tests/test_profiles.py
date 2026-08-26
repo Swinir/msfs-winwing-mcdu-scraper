@@ -51,7 +51,11 @@ class TestProfileDefinitions(unittest.TestCase):
     def test_grids_are_sane(self):
         for profile in PROFILES.values():
             self.assertGreaterEqual(profile.columns, 8, profile.id)
-            self.assertLessEqual(profile.columns, HARDWARE_COLUMNS, profile.id)
+            # Wider than the hardware is allowed - the GNLU910 renders 25
+            # columns and rows are squeezed to fit - but only just: past a
+            # couple of extra columns the squeeze starts eating content.
+            self.assertLessEqual(profile.columns, HARDWARE_COLUMNS + 2,
+                                 profile.id)
             self.assertGreaterEqual(profile.rows, 4, profile.id)
             self.assertLessEqual(profile.rows, HARDWARE_ROWS, profile.id)
 
