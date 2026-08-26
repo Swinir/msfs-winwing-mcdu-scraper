@@ -405,6 +405,36 @@ class TestRowCacheScoping(unittest.TestCase):
             "second identical frame changed the cache key set",
         )
 
+    def test_post_warmup_parse_does_not_learn_from_ocr(self):
+        """After warmup, OCR fallbacks must not grow or poison templates."""
+        self.matcher.reset()
+        self.matcher._warmup_complete = True
+
+        learn_calls = 0
+        original_learn = self.matcher.learn
+
+        def counting_learn(*args, **kwargs):
+            nonlocal learn_calls
+            learn_calls += 1
+            return original_learn(*args, **kwargs)
+
+        self.matcher.learn = counting_learn
+
+        image = np.zeros((280, 480, 3), dtype=np.uint8)
+        image[5:15, 5:15, :] = 220
+        parser = MCDUParser(image, source_id="captain")
+        parser._ocr_row_easyocr = lambda row_img, large_font: [("A", 10.0)]
+
+        saved_easyocr = self.mod._EASYOCR_AVAILABLE
+        self.mod._EASYOCR_AVAILABLE = True
+        try:
+            parser.parse_grid()
+        finally:
+            self.mod._EASYOCR_AVAILABLE = saved_easyocr
+
+        self.assertEqual(learn_calls, 0)
+        self.assertEqual(self.matcher.template_count, 0)
+
 
 class TestTemplateAuthority(unittest.TestCase):
     """A confirmed template match must outrank the geometry heuristic.

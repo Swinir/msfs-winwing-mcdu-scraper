@@ -1318,6 +1318,7 @@ class MCDUParser:
                 # symbols only; learning from it causes letters like T, A, B
                 # to be mislearned as brackets.
                 if (char.strip() and _from_ocr
+                        and not matcher._warmup_complete
                         and (row, col) not in template_results):
                     cell_bin = self._preprocess_cell(cell_img)
                     matcher.learn(char, cell_bin, confidence=0.7)
