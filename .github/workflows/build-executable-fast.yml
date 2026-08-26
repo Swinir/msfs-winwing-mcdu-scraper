@@ -1,0 +1,95 @@
+name: Fast Build and Package Executables
+
+on:
+  workflow_dispatch:  # Allow manual trigger without running tests
+
+jobs:
+  build-windows:
+    name: Build Windows Executable (Fast)
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Build GUI Executable
+      run: |
+        pyinstaller --name "MSFS-CDU-Scraper-GUI" `
+          --onefile `
+          --windowed `
+          --icon=NONE `
+          --paths src `
+          --add-data "config.yaml.example;." `
+          --hidden-import=numpy `
+          --hidden-import=cv2 `
+          --hidden-import=yaml `
+          --hidden-import=win32gui `
+          --hidden-import=win32ui `
+          --hidden-import=win32con `
+          --hidden-import=win32api `
+          --hidden-import=windows_capture `
+          --exclude-module=tkinter `
+          --exclude-module=PyQt5 `
+          --exclude-module=PyQt6 `
+          src/gui.py
+
+    - name: Package Release
+      run: |
+        # Create release directory
+        New-Item -ItemType Directory -Force -Path release
+
+        # Copy executable
+        Copy-Item dist/MSFS-CDU-Scraper-GUI.exe release/
+
+        # Copy documentation
+        Copy-Item README.md release/
+        Copy-Item QUICKSTART.md release/
+        Copy-Item LICENSE release/
+        Copy-Item config.yaml.example release/
+        # Create README for release
+        @"
+        # MSFS WinWing CDU Scraper - Executable Release
+
+        ## Quick Start
+
+        1. Double-click **MSFS-CDU-Scraper-GUI.exe**
+        2. Pop out MCDU in MSFS
+        3. Start MobiFlight WinWing MCDU Connector
+        4. Select your MCDU window from the dropdown
+        5. Click "Select Screen Area", then "Auto Detect"
+        6. Click "Start Scraper"
+
+        ## Requirements
+        - Windows 10/11
+        - MobiFlight WinWing MCDU Connector running
+        - MSFS 2020/2024 with a supported aircraft
+        - WinWing CDU hardware
+
+        ## Documentation
+        - See README.md for full documentation
+        - See QUICKSTART.md for step-by-step setup
+
+        ## Troubleshooting
+        - For connection errors, ensure MobiFlight is running on port 8320
+        - Check logs in the GUI or console output
+
+        "@ | Out-File -FilePath release/README-EXECUTABLE.txt -Encoding UTF8
+
+        # Create ZIP archive
+        Compress-Archive -Path release/* -DestinationPath MSFS-CDU-Scraper-Windows.zip
+
+    - name: Upload Release Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: MSFS-CDU-Scraper-Windows-fast
+        path: MSFS-CDU-Scraper-Windows.zip

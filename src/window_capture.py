@@ -2,10 +2,10 @@
 Window-specific capture module.
 
 Capture priority:
-1. GDI (PrintWindow / BitBlt) — works in the background for most
-   non-hardware-accelerated windows.
-2. Windows Graphics Capture (WGC) — works in the background for
+1. Windows Graphics Capture (WGC) — works in the background for
    DirectX / hardware-accelerated windows (Windows 10 1903+).
+2. GDI (PrintWindow / BitBlt) — works in the background for most
+    non-hardware-accelerated windows.
 3. mss (Desktop Duplication API) — last resort; requires the
    target window to be visible on screen.
 """
@@ -381,8 +381,8 @@ class WindowCapture:
         Capture window and return as numpy array.
 
         Strategy (probed on first frame, cached afterwards):
-        1. GDI (PrintWindow) — background-capable for non-DX windows.
-        2. WGC (Windows Graphics Capture) — background-capable for DX windows.
+        1. WGC (Windows Graphics Capture) — background-capable for DX windows.
+        2. GDI (PrintWindow) — background-capable for non-DX windows.
         3. mss (Desktop Duplication) — last resort, window must be visible.
 
         Returns:
@@ -408,30 +408,29 @@ class WindowCapture:
             elif self._backend == 'mss':
                 img = self._capture_via_mss()
             else:
-                # ----- First-frame probe: GDI → WGC → mss -----
-                img = self._capture_via_gdi(width, height)
-                if not self._is_mostly_black(img):
-                    self._backend = 'gdi'
+                # ----- First-frame probe: WGC → GDI → mss -----
+                img = self._capture_via_wgc()
+                if img is not None and not self._is_mostly_black(img):
+                    self._backend = 'wgc'
                     logger.info(
-                        "Using GDI (PrintWindow) capture — window does "
+                        "Using WGC capture — window does "
                         "NOT need to stay on top."
                     )
                 else:
                     logger.info(
-                        "GDI (PrintWindow) returned an empty frame — "
-                        "trying WGC (Windows Graphics Capture)."
+                        "WGC unavailable or returned an empty frame — "
+                        "trying GDI (PrintWindow)."
                     )
-                    wgc_img = self._capture_via_wgc()
-                    if wgc_img is not None and not self._is_mostly_black(wgc_img):
-                        img = wgc_img
-                        self._backend = 'wgc'
+                    img = self._capture_via_gdi(width, height)
+                    if not self._is_mostly_black(img):
+                        self._backend = 'gdi'
                         logger.info(
-                            "Using WGC capture — window does NOT need "
-                            "to stay on top."
+                            "Using GDI (PrintWindow) capture — window does "
+                            "NOT need to stay on top."
                         )
                     elif MSS_AVAILABLE:
                         logger.info(
-                            "WGC unavailable or returned empty frame — "
+                            "GDI (PrintWindow) returned an empty frame — "
                             "falling back to mss (Desktop Duplication). "
                             "The window must stay visible on screen."
                         )
@@ -439,8 +438,8 @@ class WindowCapture:
                         self._backend = 'mss'
                     else:
                         logger.warning(
-                            "Neither WGC nor mss available — stuck with "
-                            "GDI which returned an empty frame."
+                            "Neither GDI nor mss available — stuck with "
+                            "WGC which returned an empty frame."
                         )
                         self._backend = 'gdi'
 
