@@ -204,10 +204,10 @@ class TemplateMatcher:
     MAX_TEMPLATES = 5          # max variants stored per character
     CONSENSUS_MIN = 2          # min votes to promote a candidate template
 
-    #: Bumped whenever the normalisation changes shape-compatibility.
-    #: Templates saved under an older format are discarded on load rather
-    #: than silently compared against glyphs normalised a different way.
-    FORMAT_VERSION = 2
+    #: Bumped whenever persisted templates should be invalidated.
+    #: Besides shape-normalisation compatibility, this is also used to
+    #: discard stores learned under known-bad runtime learning behaviour.
+    FORMAT_VERSION = 3
 
     #: Where learned glyphs are persisted when no explicit path is given.
     DEFAULT_TEMPLATE_PATH = (
