@@ -17,9 +17,25 @@ from __future__ import annotations
 from typing import Dict, FrozenSet
 
 # ---------------------------------------------------------------------------
-#  What the WinWing CDU's AirbusThales font can actually draw.
-#  Derived from the official MobiFlight Fenix / FBW / Headwind scripts.
-#  Sending anything outside this set can freeze the display.
+#  What the WinWing CDU's AirbusThales font is expected to draw.
+#
+#  Checked against MobiFlight's own source.  There is no allowlist on their
+#  side: WinCtrlCduController.ConvertAndSendCduData does
+#
+#      byteList.AddRange(Encoding.UTF8.GetBytes(new char[] { currentChar }));
+#
+#  so whatever character it receives is UTF-8 encoded and forwarded to the
+#  device unvalidated, and the reference headwind_a33_winwing_cdu.py script
+#  filters nothing either -- its REPLACED_CHARS table only translates the
+#  conventions its data source uses (for example '_' for an entry box) into
+#  the matching glyphs.
+#
+#  So an earlier warning here that an unsupported character "can freeze the
+#  display" has no basis in the implementation.  The real limit is which
+#  glyphs the font file carries, and those .dat files are encrypted, so this
+#  set stays the conservative one that reference integrations are known to
+#  emit.  Widening it is a question of what the font has, not of protocol
+#  safety.
 # ---------------------------------------------------------------------------
 BALLOT_BOX = "☐"   # small square marking a selectable field
 ARROW_LEFT = "←"
@@ -31,11 +47,10 @@ DEGREE = "°"
 
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 DIGITS = "0123456789"
-# '+' is here on the evidence of a real A330 capture, which shows +0.0/+0.0
-# on the IDLE/PERF line.  Mapping it to a space lost the sign, and mapping it
-# to '-' would have inverted the value.  If the AirbusThales font turns out
-# not to carry it, move it back to SUBSTITUTIONS as '+': ' ' rather than
-# folding it onto '-'.
+# '+' is here on two pieces of evidence: a real A330 capture showing
+# +0.0/+0.0 on the IDLE/PERF line, and MobiFlight passing every character
+# through unfiltered (see above), exactly as the reference A330 script does.
+# Mapping it to a space lost the sign; mapping it to '-' would invert it.
 PUNCTUATION = " .-+/<>[]()" + DEGREE
 
 RENDERABLE: FrozenSet[str] = frozenset(

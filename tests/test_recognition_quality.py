@@ -248,6 +248,32 @@ class TestCharsetConsistency(unittest.TestCase):
         from mcdu_charset import sanitise_char
         self.assertNotEqual(sanitise_char("+"), "-")
 
+    def test_colour_codes_match_mobiflight(self):
+        """Verified against MobiFlight's FormatTable in WinCtrlCduController.cs
+        and the reference headwind_a33_winwing_cdu.py script."""
+        from config import Config
+        self.assertEqual(
+            Config.COLORS,
+            {
+                "a": "amber", "c": "cyan", "e": "grey", "g": "green",
+                "k": "khaki", "m": "magenta", "o": "blue", "r": "red",
+                "w": "white", "y": "yellow",
+            },
+        )
+
+    def test_parser_only_emits_known_colour_codes(self):
+        """A code outside MobiFlight's table is rendered grey by the device."""
+        import numpy as np
+        from config import Config
+        from mcdu_parser import MCDUParser
+        parser = MCDUParser(np.zeros((280, 480, 3), dtype=np.uint8), source_id="c")
+        for rgb in ((255, 255, 255), (0, 220, 235), (0, 230, 60), (255, 170, 0),
+                    (240, 240, 0), (240, 0, 240), (240, 40, 40), (130, 130, 130)):
+            cell = np.zeros((20, 20, 3), dtype=np.uint8)
+            cell[:, :] = rgb
+            self.assertIn(parser.detect_color(cell), Config.COLORS,
+                          f"{rgb} produced a code MobiFlight does not define")
+
 
 if __name__ == "__main__":
     unittest.main()

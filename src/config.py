@@ -23,17 +23,21 @@ class Config:
     FONT_SIZE_LARGE = 0
     FONT_SIZE_SMALL = 1
     
-    # Color codes (MobiFlight Standard)
+    # Colour codes, taken from MobiFlight's own FormatTable in
+    # src/MobiFlightConnector/MobiFlight/Joysticks/WinCtrl/WinCtrlCduController.cs
+    # and the reference headwind_a33_winwing_cdu.py script.
+    # A code outside this table is rendered as grey by the device, not white.
     COLORS = {
-        "w": "white",
-        "c": "cyan",
-        "g": "green",
-        "m": "magenta",
         "a": "amber",
+        "c": "cyan",
+        "e": "grey",
+        "g": "green",
+        "k": "khaki",
+        "m": "magenta",
+        "o": "blue",
         "r": "red",
+        "w": "white",
         "y": "yellow",
-        "e": "grey",  # for disabled/background
-        "o": "brown/blue"  # alternate
     }
     
     def __init__(self, config_path: Optional[str] = None):

@@ -267,7 +267,7 @@ requires unambiguous digits with no unambiguous letters present.
 
 ## #15 — '+' is dropped on the way to the display
 
-**Type:** bug · **Severity:** medium · **Status:** FIXED — needs confirming on hardware
+**Type:** bug · **Severity:** medium · **Status:** FIXED
 
 The real capture shows `+0.0/+0.0` on the IDLE/PERF line, confirming that `+`
 appears on genuine A330 MCDU pages.
@@ -284,10 +284,56 @@ is strong circumstantial evidence it is supported.
 `+` has been added to `PUNCTUATION`, so it now passes through to the display
 and appears in the EasyOCR allowlist.
 
-**Still to confirm on hardware:** open an IDLE/PERF page and check the CDU
-renders `+0.0/+0.0` rather than freezing.  If the font turns out not to carry
-the glyph, move it back into `SUBSTITUTIONS` as `"+": " "` — never as
-`"+": "-"`, which inverts the value while looking correct.
+Checked against MobiFlight's source afterwards, which settles it: there is no
+allowlist on their side.  `WinCtrlCduController.ConvertAndSendCduData` does
+
+```csharp
+byteList.AddRange(Encoding.UTF8.GetBytes(new char[] { currentChar }));
+```
+
+so every character is UTF-8 encoded and forwarded to the device unvalidated,
+and the reference `headwind_a33_winwing_cdu.py` filters nothing either.  The
+earlier "can freeze the display" warning has no basis in the implementation.
+
+---
+
+## #16 — Colour codes were wrong and incomplete
+
+**Type:** bug · **Severity:** low · **Status:** FIXED
+
+Checked `Config.COLORS` against MobiFlight's own `FormatTable`:
+
+| code | MobiFlight | we had |
+|---|---|---|
+| `o` | Blue | "brown/blue" |
+| `k` | Khaki | *missing* |
+
+Also worth knowing: a code outside that table is rendered **grey** by the
+device, not white.
+
+The parser never emits `o` or `k`, so nothing was being sent wrongly — the
+documented table was simply inaccurate.  Distinguishing khaki from amber and
+yellow reliably would need a capture containing it.
+
+---
+
+## #17 — The display protocol has a fourth field we ignore
+
+**Type:** enhancement · **Severity:** low · **Status:** OPEN
+
+`GetFormatBytes` in MobiFlight reads an optional fourth element per cell:
+
+```csharp
+var isInverted = item.Count() > 3 ? item[3].Value<bool>() : false;
+```
+
+so a cell can be sent as `[char, colour, size, inverted]` to get reverse
+video, which the MCDU uses for some scratchpad messages.  We only ever send
+three elements, which is valid and backwards compatible, but inverted cells
+currently reach the CDU as ordinary ones.
+
+Detecting inversion from the capture is feasible — an inverted cell has a
+bright background with dark glyph, the opposite of the usual ink test.
 
 ---
 
