@@ -88,8 +88,15 @@ SUBSTITUTIONS: Dict[str, str] = {
     ";": ".",
     "{": "[",
     "}": "]",
-    "<": ARROW_LEFT,    # line-select prompt on the left side
-    ">": ARROW_RIGHT,   # line-select prompt on the right side
+    # '<' and '>' are deliberately absent.  They used to be folded onto the
+    # arrows, but the MCDU draws both, and on the same page: the real capture
+    # has a true left arrow (shaft plus solid head) at R06C00 and a plain
+    # chevron at the end of STATUS/XLOAD> on R12.  Rewriting one into the
+    # other changes what the CDU shows.
+    #
+    # MobiFlight's reference headwind_a33_winwing_cdu.py agrees: it maps
+    # '{' and '}' onto the arrows and lets '<' and '>' through untouched.
+    # Both are in PUNCTUATION, so they pass through here as themselves.
 }
 
 

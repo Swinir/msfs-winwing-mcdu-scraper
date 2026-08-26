@@ -48,8 +48,21 @@ class TestSanitiseDisplayData(unittest.TestCase):
         result = sanitise_display_data([["AB", "w", 0]])
         self.assertEqual(result[0][0], "A")
 
-    def test_angle_brackets_become_arrows(self):
+    def test_chevrons_are_not_folded_onto_arrows(self):
+        """The MCDU draws both, on the same page.
+
+        A real capture has a true left arrow (shaft plus solid head) beside
+        the second nav database, and a plain chevron at the end of
+        STATUS/XLOAD> on the line below. Rewriting one into the other changes
+        what the CDU shows. MobiFlight's reference A330 script agrees: it maps
+        '{' and '}' onto the arrows and leaves '<' and '>' alone.
+        """
         result = sanitise_display_data([["<", "w", 0], [">", "w", 0]])
+        self.assertEqual(result[0][0], "<")
+        self.assertEqual(result[1][0], ">")
+
+    def test_real_arrows_pass_through(self):
+        result = sanitise_display_data([["←", "c", 0], ["→", "w", 0]])
         self.assertEqual(result[0][0], "←")
         self.assertEqual(result[1][0], "→")
 

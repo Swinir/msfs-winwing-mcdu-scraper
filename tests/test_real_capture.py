@@ -221,6 +221,33 @@ class TestRealCaptureRecognition(unittest.TestCase):
         )
         self.assertIn("19FEB-19MAR", row4, f"row 4 read as {row4!r}")
 
+    def test_whole_page_reaches_the_cdu_unchanged(self):
+        """After sanitising, the payload must equal the page as displayed.
+
+        This is the end-to-end contract: detect, crop, parse, sanitise, and
+        what the CDU receives is what MSFS drew.
+        """
+        parsed = self._parse()
+        sent = sanitise_display_data(parsed)
+        for row in range(14):
+            line = "".join(
+                (sent[row * 24 + c][0] if sent[row * 24 + c] else " ")
+                for c in range(24)
+            )
+            self.assertEqual(line, TRUTH[row], f"row {row} differs")
+
+    def test_chevron_is_not_turned_into_an_arrow(self):
+        """R06 holds a true left arrow, R12 ends in a plain chevron.
+
+        Both glyphs appear on this one page, so folding '>' onto the right
+        arrow would have changed what the CDU shows.
+        """
+        sent = sanitise_display_data(self._parse())
+        self.assertEqual(sent[12 * 24 + 23][0], ">",
+                         "the chevron was rewritten as an arrow")
+        self.assertEqual(sent[6 * 24 + 0][0], "←",
+                         "the left arrow did not survive")
+
     def test_plus_signs_reach_the_display_intact(self):
         """IDLE/PERF shows +0.0/+0.0, so the sign has to survive the trip.
 
