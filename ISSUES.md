@@ -449,7 +449,9 @@ stores atomically, saving the outgoing one.
   PMDG all have **native MobiFlight scripts** already, so scraping them is
   redundant.
 - *Kept:* default/iniBuilds Airbus suite, LatinVFR/Horizon (default-based
-  avionics → Airbus profile); default 747-8/787, C-17, E-7, GNLU910 →
+  avionics → Airbus profile); ATR 42/72-600 (Thales FMS 220, added on
+  request → its own profile: same 24x14 Thales layout, separate template
+  store because the ATR renders glyphs differently); default 747-8/787, C-17, E-7, GNLU910 →
   Boeing profile; Black Square + Just Flight UNS-1 fleet → UNS-1 profile;
   GNS-XLS and other unknowns → Custom.
 - *Unverified:* the E-7 Wedgetail's presence/CDU in MSFS 2024.

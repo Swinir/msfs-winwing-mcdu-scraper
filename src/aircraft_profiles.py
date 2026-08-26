@@ -78,6 +78,19 @@ PROFILES: Dict[str, AircraftProfile] = {
             template_filename="mcdu_templates.npz",
         ),
         AircraftProfile(
+            id="atr",
+            label="ATR 42/72-600 MCDU  (Thales FMS 220)",
+            columns=24,
+            rows=14,
+            font="AirbusThales",
+            template_filename="mcdu_templates_atr.npz",
+            notes=(
+                "Same Thales-style 24x14 layout as the Airbus MCDU, but the "
+                "ATR renders its glyphs differently, so it learns into its "
+                "own template store."
+            ),
+        ),
+        AircraftProfile(
             id="boeing",
             label="Boeing CDU  (747-8, 787, C-17, E-7, GNLU910)",
             columns=24,
