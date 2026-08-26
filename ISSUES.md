@@ -337,6 +337,57 @@ bright background with dark glyph, the opposite of the usual ink test.
 
 ---
 
+## #18 — '<' and '>' were folded onto the arrows
+
+**Type:** bug · **Severity:** medium · **Status:** FIXED
+
+`_CDU_CHAR_MAP` mapped `<` to ← and `>` to →, described as "MCDU arrow
+indicator".  The MCDU draws chevrons and arrows as *different* glyphs, and
+both appear on the same page.  Enlarging the two cells from the real capture:
+
+- `R06C00` — a true left arrow: shaft plus a solid triangular head
+- `R12C23` — a plain chevron: two strokes, no shaft, no head
+
+So `STATUS/XLOAD>` was reaching the CDU as `STATUS/XLOAD→`.
+
+MobiFlight's reference `headwind_a33_winwing_cdu.py` agrees: its
+`REPLACED_CHARS` maps `{` and `}` onto the arrows and leaves `<` and `>`
+untouched.  Its braces are how *its data source* encodes an arrow, which is a
+different question from what a rendered glyph looks like — our input is OCR
+of pixels, so a chevron on screen is a chevron.
+
+Both characters are already renderable, so they now pass through unchanged.
+
+---
+
+## #19 — EasyOCR cannot produce the arrow glyphs
+
+**Type:** limitation · **Severity:** low · **Status:** OPEN
+
+`OCR_ALLOWLIST` is the ASCII subset of the renderable set, so ← → ↑ ↓ ☐ and Δ
+are not available to EasyOCR — a CRNN will not reliably produce them anyway.
+During warmup an arrow cell can therefore only come back as `<` or `>`, and
+that wrong label is what gets learned as a template.
+
+Consequence: on a first run against a page containing arrows, they display as
+chevrons.  Low harm — the glyphs are visually close — but wrong.
+
+Fixing #18 removed the accidental cover for this: mapping every `<` to ← used
+to make arrows come out right, at the cost of corrupting genuine chevrons.
+
+**Possible fix:** teach the contour detector to recognise arrows.  Measured on
+the real capture, the discriminator looks clean — the fraction of glyph rows
+spanning more than 75% of the width is 0.20 for the arrow and 0.00 for both
+the chevron and `/`, because only the arrow has a shaft.
+
+**Why it is not implemented:** `E`, `T`, `F`, `H` and `+` all have horizontal
+strokes that would score similarly, and there is exactly one arrow available
+to fit against.  A false positive here gets learned as a template and
+permanently corrupts that glyph, which is the failure mode of #5.  This needs
+captures containing several arrows before it is worth attempting.
+
+---
+
 ## #9 — Migrate the GUI from Tkinter to PySide6
 
 **Type:** feature · **Severity:** n/a · **Status:** FIXED
