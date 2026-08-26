@@ -32,7 +32,7 @@ jobs:
     
     - name: Build GUI Executable
       run: |
-        pyinstaller --name "MSFS-MCDU-Scraper-GUI" `
+        pyinstaller --name "MSFS-CDU-Scraper-GUI" `
           --onefile `
           --windowed `
           --icon=NONE `
@@ -57,7 +57,7 @@ jobs:
         New-Item -ItemType Directory -Force -Path release
         
         # Copy executable
-        Copy-Item dist/MSFS-MCDU-Scraper-GUI.exe release/
+        Copy-Item dist/MSFS-CDU-Scraper-GUI.exe release/
         
         # Copy documentation
         Copy-Item README.md release/
@@ -66,11 +66,11 @@ jobs:
         Copy-Item config.yaml.example release/
         # Create README for release
         @"
-        # MSFS WinWing MCDU Scraper - Executable Release
+        # MSFS WinWing CDU Scraper - Executable Release
         
         ## Quick Start
         
-        1. Double-click **MSFS-MCDU-Scraper-GUI.exe**
+        1. Double-click **MSFS-CDU-Scraper-GUI.exe**
         2. Pop out MCDU in MSFS
         3. Start MobiFlight WinWing MCDU Connector
         4. Select your MCDU window from the dropdown
@@ -80,7 +80,7 @@ jobs:
         ## Requirements
         - Windows 10/11
         - MobiFlight WinWing MCDU Connector running
-        - MSFS 2020/2024 with Airbus A330
+        - MSFS 2020/2024 with a supported aircraft
         - WinWing CDU hardware
         
         ## Documentation
@@ -94,36 +94,36 @@ jobs:
         "@ | Out-File -FilePath release/README-EXECUTABLE.txt -Encoding UTF8
         
         # Create ZIP archive
-        Compress-Archive -Path release/* -DestinationPath MSFS-MCDU-Scraper-Windows.zip
+        Compress-Archive -Path release/* -DestinationPath MSFS-CDU-Scraper-Windows.zip
     
     - name: Upload Release Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: MSFS-MCDU-Scraper-Windows
-        path: MSFS-MCDU-Scraper-Windows.zip
+        name: MSFS-CDU-Scraper-Windows
+        path: MSFS-CDU-Scraper-Windows.zip
     
     - name: Create Release
       if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v2
       with:
-        files: MSFS-MCDU-Scraper-Windows.zip
+        files: MSFS-CDU-Scraper-Windows.zip
         body: |
-          # MSFS WinWing MCDU Scraper - Windows Executable Release
+          # MSFS WinWing CDU Scraper - Windows Executable Release
           
           ## What's Included
-          - **MSFS-MCDU-Scraper-GUI.exe** - the application
+          - **MSFS-CDU-Scraper-GUI.exe** - the application
           - Complete documentation
           - Example configuration file
           
           ## Quick Start
-          1. Download and extract MSFS-MCDU-Scraper-Windows.zip
-          2. Run MSFS-MCDU-Scraper-GUI.exe
+          1. Download and extract MSFS-CDU-Scraper-Windows.zip
+          2. Run MSFS-CDU-Scraper-GUI.exe
           3. Follow the on-screen instructions
           
           ## Requirements
           - Windows 10/11
           - MobiFlight WinWing MCDU Connector
-          - MSFS with Airbus A330
+          - MSFS 2020/2024 with a supported aircraft
           - WinWing CDU hardware
           
           See README.md in the package for full documentation.

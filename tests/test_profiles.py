@@ -90,7 +90,7 @@ class TestPadding(unittest.TestCase):
         self.assertIs(pad_to_hardware(cells, 24, 14), cells)
 
     def test_output_is_always_the_hardware_size(self):
-        padded = pad_to_hardware(self._grid(24, 10), 24, 10)
+        padded = pad_to_hardware(self._grid(24, 11), 24, 11)
         self.assertEqual(len(padded), HARDWARE_COLUMNS * HARDWARE_ROWS)
 
     def test_content_lands_top_left(self):
@@ -122,18 +122,18 @@ class TestSmallFontRules(unittest.TestCase):
 
     def test_all_large_never_reports_small(self):
         image = np.zeros((200, 480, 3), dtype=np.uint8)
-        parser = MCDUParser(image, columns=24, rows=10,
+        parser = MCDUParser(image, columns=24, rows=11,
                             small_font_rule="all_large")
-        for row in range(10):
+        for row in range(11):
             self.assertFalse(parser.is_small_font(row))
 
     def test_labels_small_generalises_the_last_row(self):
         """The scratchpad is the LAST row large, whatever the grid height."""
         image = np.zeros((200, 480, 3), dtype=np.uint8)
-        parser = MCDUParser(image, columns=24, rows=10,
+        parser = MCDUParser(image, columns=24, rows=11,
                             small_font_rule="labels_small")
         self.assertTrue(parser.is_small_font(1))
-        self.assertFalse(parser.is_small_font(9),
+        self.assertFalse(parser.is_small_font(10),
                          "the last row must render large")
 
     def test_default_grid_unchanged(self):
@@ -170,7 +170,7 @@ class TestUns1EndToEnd(unittest.TestCase):
         self._tmpdir.cleanup()
 
     def _teach(self):
-        parser = MCDUParser(self.screen, columns=24, rows=10,
+        parser = MCDUParser(self.screen, columns=24, rows=11,
                             source_id="teach", small_font_rule="all_large")
         for row, line in enumerate(self.page.padded()):
             for col, char in enumerate(line):
@@ -180,18 +180,18 @@ class TestUns1EndToEnd(unittest.TestCase):
                 self.matcher.learn(char, binary, confidence=1.0)
                 self.matcher.learn(char, binary, confidence=1.0)
 
-    def test_detector_finds_a_24x10_grid(self):
+    def test_detector_finds_a_24x11_grid(self):
         window, truth = embed_in_window(self.screen, chrome=True)
-        found = detect_mcdu_region(window, columns=24, rows=10)
-        self.assertIsNotNone(found, "no 24x10 grid detected")
+        found = detect_mcdu_region(window, columns=24, rows=11)
+        self.assertIsNotNone(found, "no 24x11 grid detected")
         self.assertGreater(region_iou(found, truth), 0.93,
                            f"got {found}, want {truth}")
 
-    def test_recognition_on_a_24x10_grid(self):
+    def test_recognition_on_a_24x11_grid(self):
         self._teach()
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
-        parsed = MCDUParser(self.screen, columns=24, rows=10,
+        parsed = MCDUParser(self.screen, columns=24, rows=11,
                             source_id="uns1",
                             small_font_rule="all_large").parse_grid()
         score = grid_accuracy(self.page.expected_cells(), parsed)
@@ -204,7 +204,7 @@ class TestUns1EndToEnd(unittest.TestCase):
         self._teach()
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
-        parsed = MCDUParser(self.screen, columns=24, rows=10,
+        parsed = MCDUParser(self.screen, columns=24, rows=11,
                             source_id="uns1g",
                             small_font_rule="all_large").parse_grid()
         for cell in parsed:
@@ -216,13 +216,13 @@ class TestUns1EndToEnd(unittest.TestCase):
         self._teach()
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
-        parsed = MCDUParser(self.screen, columns=24, rows=10,
+        parsed = MCDUParser(self.screen, columns=24, rows=11,
                             source_id="uns1p",
                             small_font_rule="all_large").parse_grid()
-        padded = pad_to_hardware(parsed, 24, 10)
+        padded = pad_to_hardware(parsed, 24, 11)
         self.assertEqual(len(padded), 336)
         # Rows 10-13 of the hardware grid must be blank.
-        for index in range(10 * 24, 336):
+        for index in range(11 * 24, 336):
             self.assertEqual(padded[index], [])
 
 

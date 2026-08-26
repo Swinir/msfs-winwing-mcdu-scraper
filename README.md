@@ -1,4 +1,4 @@
-# MSFS WinWing MCDU Scraper
+# MSFS WinWing CDU Scraper
 
 Captures an aircraft's FMS display (MCDU / CDU / UNS-1) from its MSFS pop-out
 window and sends it to WinWing CDU hardware via WebSocket.
@@ -39,7 +39,7 @@ window and sends it to WinWing CDU hardware via WebSocket.
 Download the latest release from
 [Releases](https://github.com/Swinir/msfs-winwing-mcdu-scraper/releases):
 
-`MSFS-MCDU-Scraper-GUI.exe` — no Python or dependencies needed.
+`MSFS-CDU-Scraper-GUI.exe` — no Python or dependencies needed.
 
 ### From source
 
@@ -62,7 +62,7 @@ copy config.yaml.example config.yaml
 
 ## Quick Start
 
-1. Start MSFS with the A330
+1. Start MSFS with your aircraft
 2. Pop out the MCDU window (right-click the MCDU → "Pop Out")
 3. Start the MobiFlight WinWing MCDU Connector
 4. Run the GUI

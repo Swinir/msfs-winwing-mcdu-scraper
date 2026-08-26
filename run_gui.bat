@@ -1,9 +1,9 @@
 @echo off
-REM MSFS A330 WinWing MCDU Scraper - GUI Launcher
+REM MSFS WinWing CDU Scraper - GUI Launcher
 REM This script activates the virtual environment and runs the GUI
 
 echo ============================================================
-echo MSFS A330 WinWing MCDU Scraper - GUI
+echo MSFS WinWing CDU Scraper - GUI
 echo ============================================================
 echo.
 

@@ -21,7 +21,7 @@ if exist build rmdir /s /q build
 echo.
 echo Building GUI executable...
 echo ----------------------------------------
-venv\Scripts\pyinstaller --name "MSFS-MCDU-Scraper-GUI" ^
+venv\Scripts\pyinstaller --name "MSFS-CDU-Scraper-GUI" ^
     --onefile ^
     --windowed ^
     --icon=NONE ^
@@ -59,7 +59,7 @@ set /p create_release="Create release package (y/n)? "
 if /i "%create_release%"=="y" (
     echo Creating release package...
     if not exist release mkdir release
-    xcopy /Y dist\MSFS-MCDU-Scraper-GUI.exe release\
+    xcopy /Y dist\MSFS-CDU-Scraper-GUI.exe release\
     xcopy /Y README.md release\
     xcopy /Y QUICKSTART.md release\
     xcopy /Y LICENSE release\

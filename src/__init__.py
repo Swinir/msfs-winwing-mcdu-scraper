@@ -1,8 +1,13 @@
 """
-MSFS A330 WinWing MCDU Scraper
-A Python-based screen scraping solution for displaying the default MSFS Airbus A330 MCDU 
-on WinWing CDU hardware.
+MSFS WinWing CDU Scraper
+
+Captures an aircraft's FMS display (MCDU / CDU / UNS-1) from its Microsoft
+Flight Simulator pop-out window and forwards it to WinWing CDU hardware over
+MobiFlight's WebSocket interface.
+
+The scraper reads pixels rather than sim data, so it works with any aircraft
+whose FMS shows a character grid - including those with no native MobiFlight
+integration. See aircraft_profiles for the supported display families.
 """
 
-__version__ = "1.0.0"
-__author__ = "MSFS WinWing MCDU Scraper Team"
+__version__ = "2.0.0"

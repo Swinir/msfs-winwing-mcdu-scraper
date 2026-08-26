@@ -102,15 +102,16 @@ PROFILES: Dict[str, AircraftProfile] = {
             id="uns1",
             label="UNS-1 FMS  (Black Square, Just Flight 146/F28) — experimental",
             columns=24,
-            rows=10,
+            rows=11,
             font="Boeing",
             small_font_rule="all_large",
             template_filename="mcdu_templates_uns1.npz",
             notes=(
-                "Grid size is a best guess pending real captures — the UNS-1 "
-                "shows fewer rows than an airliner CDU. If rows of text land "
-                "in the wrong cells, correct the grid under Advanced > "
-                "Override grid size."
+                "24x11, measured from Working Title and Just Flight BAe 146 "
+                "captures. Auto Detect is unreliable on these displays — "
+                "drag the box yourself and check the grid overlay lines up. "
+                "Unlike an airliner CDU the UNS-1 is only approximately a "
+                "uniform grid, so expect the odd clipped row."
             ),
         ),
         AircraftProfile(

@@ -1,6 +1,6 @@
 # Quick Start Guide
 
-Get the MSFS A330 WinWing MCDU Scraper running in about five minutes.
+Get the MSFS WinWing CDU Scraper running in about five minutes.
 
 ## What it does
 
@@ -25,7 +25,7 @@ visually.
 
 1. **Pop out the MCDU** in MSFS: right-click the MCDU → "Pop Out".
 2. **Start MobiFlight** WinWing MCDU Connector.
-3. **Run the GUI**: double-click `MSFS-MCDU-Scraper-GUI.exe`, or `run_gui.bat`
+3. **Run the GUI**: double-click `MSFS-CDU-Scraper-GUI.exe`, or `run_gui.bat`
    from source.
 4. **Select your window** from the dropdown (look for "Flight Simulator" or
    "MCDU"). Tick "Show all windows" if it is not listed.
@@ -122,5 +122,5 @@ Activate the virtual environment and re-run
 ## Next steps
 
 - Full documentation: [README.md](README.md)
-- Check `mcdu_scraper.log` when something misbehaves
+- Check `cdu_scraper.log` when something misbehaves
 - Report problems on [GitHub](https://github.com/Swinir/msfs-winwing-mcdu-scraper/issues)

@@ -1,4 +1,4 @@
-# Configuration for the MSFS WinWing MCDU Scraper.
+# Configuration for the MSFS WinWing CDU Scraper.
 #
 # Which window to capture, and which part of it holds the MCDU screen, are
 # chosen in the GUI - they are not settings. Everything that remains here is

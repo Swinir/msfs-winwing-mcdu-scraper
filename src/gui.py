@@ -1,5 +1,5 @@
 """
-GUI application for MSFS A330 WinWing MCDU Scraper (PySide6).
+GUI application for MSFS WinWing CDU Scraper (PySide6).
 
 Provides window selection, screen-area selection, log viewing and control.
 
@@ -56,7 +56,10 @@ from region_selector import RegionSelectorDialog
 from window_capture import WindowCapture, WINDOWS_AVAILABLE
 
 MSFS_KEYWORDS = ('microsoft flight simulator', 'msfs', 'flight simulator',
-                 'mcdu', 'airbus')
+                 'mcdu', 'cdu', 'fms', 'airbus', 'boeing', 'uns')
+
+#: Written alongside the log pane so a session can be reported after the fact.
+LOG_FILENAME = 'cdu_scraper.log'
 
 
 class _LogEmitter(QObject):
@@ -198,7 +201,7 @@ class MCDUScraperWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("MSFS WinWing MCDU Scraper")
+        self.setWindowTitle("MSFS WinWing CDU Scraper")
         self.resize(960, 720)
 
         self.running = False
@@ -235,7 +238,7 @@ class MCDUScraperWindow(QMainWindow):
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
 
-        title = QLabel("MSFS WinWing MCDU Scraper")
+        title = QLabel("MSFS WinWing CDU Scraper")
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet("font-size: 18px; font-weight: bold;")
         layout.addWidget(title)
@@ -424,6 +427,19 @@ class MCDUScraperWindow(QMainWindow):
         root.addHandler(handler)
         root.setLevel(logging.INFO)
         self._log_handler = handler
+
+        # Also to disk: the pane is gone once the window closes, and the
+        # first thing anyone needs when reporting a problem is the log.
+        # File logging used to live in the CLI, so it disappeared with it.
+        try:
+            log_file = logging.FileHandler(LOG_FILENAME, encoding="utf-8")
+            log_file.setFormatter(handler.formatter)
+            root.addHandler(log_file)
+            self._file_handler = log_file
+        except OSError as exc:
+            self._file_handler = None
+            logging.getLogger(__name__).warning(
+                "Could not open %s for writing: %s", LOG_FILENAME, exc)
 
     # ------------------------------------------------------------------
     #  Logging
@@ -753,7 +769,11 @@ class MCDUScraperWindow(QMainWindow):
             if self.thread:
                 self.thread.wait(5000)
 
-        logging.getLogger().removeHandler(self._log_handler)
+        root = logging.getLogger()
+        root.removeHandler(self._log_handler)
+        if getattr(self, "_file_handler", None) is not None:
+            root.removeHandler(self._file_handler)
+            self._file_handler.close()
         event.accept()
 
 

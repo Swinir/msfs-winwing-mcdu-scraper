@@ -1,4 +1,4 @@
-# Contributing to MSFS A330 WinWing MCDU Scraper
+# Contributing to MSFS WinWing CDU Scraper
 
 Thank you for your interest in contributing to this project!
 

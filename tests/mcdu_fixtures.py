@@ -182,10 +182,11 @@ def uns1_page() -> MCDUPage:
             "SXTK 0.0  MSA 3100      ",
             "WIND 270/45             ",
             "POS N42 21.7 W071 00.4  ",
+            "←ACCEPT   FMC VER  2.2.3",
         ],
-        colors=["g"] * 10,
+        colors=["g"] * 11,
         columns=24,
-        rows=10,
+        rows=11,
         small_font_rule="all_large",
     )
 

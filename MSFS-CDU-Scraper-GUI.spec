@@ -24,7 +24,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='MSFS-MCDU-Scraper-GUI',
+    name='MSFS-CDU-Scraper-GUI',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

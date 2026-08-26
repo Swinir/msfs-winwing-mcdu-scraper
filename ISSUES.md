@@ -467,6 +467,46 @@ stores atomically, saving the outgoing one.
 
 ---
 
+## #22 — Auto Detect does not handle UNS-1 displays
+
+**Type:** limitation · **Severity:** medium · **Status:** OPEN
+
+Two real UNS-1 captures (Working Title, and Just Flight's BAe 146) showed
+that the pitch detector built for airliner CDUs does not transfer:
+
+**The grid is 24x11, not 24x10.** Both captures agree: ten lines of text and
+one blank. The profile was corrected from the original guess.
+
+**A UNS-1 is only approximately a uniform grid.** An Airbus CDU is a true
+lattice — all 12 text bands of the A330 capture fit inside their cells. On
+the UNS-1 the body rows are evenly spaced (WT 28.4px ±6%, JF 25.5px ±0%) but
+the title and bottom lines sit off that lattice, separated by 36-62px where
+the body pitch is 25-28. No uniform grid holds every row: the best fit
+manages 6/10 (WT) and 9/10 (JF).
+
+**Its rows touch.** The WT display has large glyphs with tight leading, so
+five text rows merge into one 141px ink band. Row detection assumes a gap
+between lines, which holds for a CDU and not here.
+
+**What was tried.** Splitting merged bands at their internal minima,
+rejecting sparse frame bands, estimating pitch from the dominant spacing and
+from autocorrelation, seeding the lattice phase from a circular mean. Each
+helped one capture and hurt another; scored across all captures the changes
+came out *worse* overall than the current detector (51% against 69% on a
+band-containment metric), and degraded the validated A330 path from 100% to
+97%. They were reverted rather than shipped.
+
+**Where that leaves it.** Auto Detect is a convenience; the normal workflow
+is dragging the box, and the grid overlay shows immediately whether it lines
+up. For UNS-1 aircraft, drag it. Verified crops that parse correctly are
+recorded in `tests/test_uns1_captures.py`.
+
+**The real fix** is probably to stop assuming a uniform lattice for these
+displays and map detected text bands to rows directly. That is a different
+model from the current one and wants doing deliberately, not bolted on.
+
+---
+
 ## #9 — Migrate the GUI from Tkinter to PySide6
 
 **Type:** feature · **Severity:** n/a · **Status:** FIXED

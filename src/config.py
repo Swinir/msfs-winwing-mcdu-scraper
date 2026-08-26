@@ -1,5 +1,5 @@
 """
-Configuration management for MSFS A330 WinWing MCDU Scraper
+Configuration management for MSFS WinWing CDU Scraper
 """
 
 import os
