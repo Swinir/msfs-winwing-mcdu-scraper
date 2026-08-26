@@ -38,7 +38,13 @@ def sanitise_display_data(display_data: list) -> list:
         if not cell:
             sanitised.append([])
             continue
-        sanitised.append([sanitise_char(cell[0]), cell[1], cell[2]])
+        out = [sanitise_char(cell[0]), cell[1], cell[2]]
+        # Optional fourth element: reverse video.  Only sent when set, so
+        # ordinary cells stay three-element as every other integration
+        # sends them.
+        if len(cell) > 3 and cell[3]:
+            out.append(True)
+        sanitised.append(out)
     return sanitised
 
 
@@ -199,7 +205,9 @@ class MobiFlightClient:
         freeze or blank the display).
 
         Args:
-            display_data: List of 336 elements, each either [] or [char, color, size]
+            display_data: List of 336 elements, each either [] or
+            [char, colour, size] - optionally [char, colour, size, inverted]
+            for reverse video.
         """
         sanitised = sanitise_display_data(display_data)
 

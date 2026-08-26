@@ -319,7 +319,7 @@ yellow reliably would need a capture containing it.
 
 ## #17 — The display protocol has a fourth field we ignore
 
-**Type:** enhancement · **Severity:** low · **Status:** OPEN
+**Type:** enhancement · **Severity:** low · **Status:** FIXED
 
 `GetFormatBytes` in MobiFlight reads an optional fourth element per cell:
 
@@ -332,8 +332,28 @@ video, which the MCDU uses for some scratchpad messages.  We only ever send
 three elements, which is valid and backwards compatible, but inverted cells
 currently reach the CDU as ordinary ones.
 
-Detecting inversion from the capture is feasible — an inverted cell has a
-bright background with dark glyph, the opposite of the usual ink test.
+Now implemented. A reverse-video cell is mostly at foreground brightness
+where an ordinary one is mostly background, and the threshold between the
+two is measured rather than guessed: across 929 cells from six real
+captures, ordinary cells reach at most 40.9% fill and inverted ones start
+at 47.8%, so the cut sits at 44%.
+
+The brightness reference comes from each image's own 99th percentile, so a
+dim display is judged on its own terms rather than against a fixed level.
+
+Inverted cells are flipped before glyph extraction, so a reverse-video `A`
+matches the same learned template as an ordinary one instead of being
+learned separately as a filled block with a hole in it. `detect_color`
+needed no change: it medians the *bright* pixels, which in an inverted cell
+are the block rather than the glyph, so it already reports the block colour.
+
+The fourth element is sent only when set, so ordinary cells stay
+three-element exactly as every other integration sends them — verified by
+re-parsing the A330 capture and confirming its payload is unchanged.
+
+Found on the Working Title UNS-1 capture, whose ACCEPT prompt is reverse
+video; detection is exact on both UNS-1 captures and has no false positives
+on the other four.
 
 ---
 

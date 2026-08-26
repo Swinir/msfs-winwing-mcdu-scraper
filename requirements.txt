@@ -5,8 +5,9 @@ Pillow>=10.0.0
 websockets>=12.0
 PyYAML>=6.0
 
-# GUI toolkit.  PySide6 is LGPL, so the MIT licence and the shipped .exe are
-# both fine; PyQt would be GPL.
+# GUI toolkit.  PySide6 is LGPL, which the project's noncommercial licence
+# and the shipped .exe both permit; PyQt would be GPL and would force the
+# whole project to GPL.
 # Upper bound: PySide6 6.11+ needs a newer MSVC runtime than many systems
 # have, and fails with "DLL load failed while importing QtCore". Raise the
 # bound once you have installed the latest VC++ redistributable.

@@ -203,7 +203,10 @@ The scraper never talks to MSFS directly — it processes whatever is on screen.
 ```
 
 Colour codes: `w`=white, `c`=cyan, `g`=green, `a`=amber, `r`=red, `y`=yellow,
-`m`=magenta, `e`=grey
+`m`=magenta, `e`=grey, `o`=blue, `k`=khaki
+A cell may carry a fourth element, `[char, colour, size, true]`, for reverse
+video — a coloured block with the glyph punched out of it, as the MCDU uses
+for scratchpad messages and the UNS-1 for its ACCEPT prompt.
 Font sizes: `0`=large, `1`=small
 Grid: 24 columns x 14 rows (336 cells)
 
@@ -274,7 +277,14 @@ Known issues and their current status are tracked in [ISSUES.md](ISSUES.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+**PolyForm Noncommercial 1.0.0** — see [LICENSE](LICENSE).
+
+Free for personal and hobby use, and for nonprofit organisations such as
+flying clubs. Modifying and sharing your changes is fine. Selling it,
+charging for access, or bundling it into anything sold is not. Contact the
+copyright holder for a commercial licence.
+
+PySide6 is used under the LGPL, which this permits.
 
 ## Support
 

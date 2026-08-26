@@ -569,6 +569,14 @@ class MCDUParser:
     INK_THRESHOLD = 80
     MIN_INK_RATIO = 0.008
 
+    #: A cell whose pixels are mostly at foreground brightness is reverse
+    #: video: a coloured block with a dark glyph cut out of it.  The MCDU
+    #: uses it for scratchpad messages, and the UNS-1 for its ACCEPT prompt.
+    #: Measured over 929 cells from six real captures, ordinary cells reach
+    #: at most 40.9% and inverted ones start at 47.8%, so this sits between
+    #: them with roughly three points of margin either side.
+    INVERTED_FILL_RATIO = 0.44
+
     def __init__(self, image: np.ndarray,
                  columns: int = 24, rows: int = 14,
                  source_id: str = "default",
@@ -612,6 +620,12 @@ class MCDUParser:
         # Per-image background floor (for adaptive thresholding)
         max_ch = np.max(image, axis=2)
         self._bg_floor = int(np.percentile(max_ch, 5))
+
+        # Midpoint between background and glyph brightness, used to tell a
+        # reverse-video cell from an ordinary one.  Taken from the image
+        # rather than fixed, so a dim display is judged on its own terms.
+        peak = float(np.percentile(max_ch, 99))
+        self._mid_level = self._bg_floor + 0.5 * (peak - self._bg_floor)
 
         logger.debug(
             "MCDUParser: %dx%d grid, image %dx%d, "
@@ -684,6 +698,19 @@ class MCDUParser:
         return "w"
 
     # ------------------------------------------------------------------
+    #  Reverse video
+    # ------------------------------------------------------------------
+    def is_inverted_cell(self, cell: np.ndarray) -> bool:
+        """True when the cell is a coloured block with a dark glyph in it.
+
+        MobiFlight's display protocol carries this as an optional fourth
+        element per cell, ``[char, colour, size, inverted]``, and the CDU
+        renders it as reverse video.
+        """
+        gray = np.max(cell, axis=2)
+        return float(np.mean(gray > self._mid_level)) > self.INVERTED_FILL_RATIO
+
+    # ------------------------------------------------------------------
     #  Empty-cell detection  (adaptive)
     # ------------------------------------------------------------------
     def is_empty_cell(self, cell: np.ndarray, threshold: int = 30) -> bool:
@@ -709,8 +736,16 @@ class MCDUParser:
     #  Cell preprocessing  (for template matching)
     # ------------------------------------------------------------------
     def _preprocess_cell(self, cell: np.ndarray) -> np.ndarray:
-        """Convert a colour cell to a clean binary image."""
+        """Convert a colour cell to a clean binary image.
+
+        A reverse-video cell is flipped first, so the glyph reads as ink and
+        matches the same learned template as its normal-video twin.  Without
+        that, every inverted character would be learned separately as a
+        filled block with a hole in it.
+        """
         gray = np.max(cell, axis=2)
+        if self.is_inverted_cell(cell):
+            gray = 255 - gray
         # Per-cell Otsu finds the optimal ink/background split.
         # It degrades when the cell is near-empty (low variance → very low
         # threshold that passes noise).  Guard: only accept Otsu values in
@@ -1046,7 +1081,10 @@ class MCDUParser:
                     char = self._detect_via_contours(cell) or " "
                     color = self.detect_color(cell)
                     size = 1 if self.is_small_font(row) else 0
-                    message_data.append([char, color, size])
+                    if self.is_inverted_cell(cell):
+                        message_data.append([char, color, size, True])
+                    else:
+                        message_data.append([char, color, size])
             elapsed = time.perf_counter() - t0
             logger.debug("parse_grid (contours only): %.0f ms", elapsed * 1000)
             return message_data
@@ -1287,7 +1325,13 @@ class MCDUParser:
 
                 color = self.detect_color(cell_img)
                 size = 1 if self.is_small_font(row) else 0
-                message_data.append([char, color, size])
+                # detect_color already reports the block's colour for an
+                # inverted cell: it medians the *bright* pixels, which are
+                # the background there rather than the glyph.
+                if self.is_inverted_cell(cell_img):
+                    message_data.append([char, color, size, True])
+                else:
+                    message_data.append([char, color, size])
 
         # Resolve letter/digit confusions using each row's own token structure.
         self._apply_context_corrections(message_data)
