@@ -7,6 +7,7 @@ import numpy as np
 from pathlib import Path
 import sys
 import tempfile
+from unittest import mock
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
@@ -99,6 +100,28 @@ class TestMCDUParser(unittest.TestCase):
         self.assertEqual(len(binary.shape), 2)
         unique = set(np.unique(binary))
         self.assertTrue(unique.issubset({0, 255}))
+
+    def test_row_ocr_uses_stricter_runtime_confidence(self):
+        class _Reader:
+            @staticmethod
+            def readtext(*args, **kwargs):
+                return [(
+                    [[16, 16], [40, 16], [40, 40], [16, 40]],
+                    "AB",
+                    0.2,
+                )]
+
+        parser = MCDUParser(self.test_image)
+        row_img = np.zeros((20, 480, 3), dtype=np.uint8)
+        with mock.patch("mcdu_parser._get_easyocr_reader", return_value=_Reader()):
+            runtime_chars = parser._ocr_row_easyocr(row_img, large_font=True)
+            warmup_chars = parser._ocr_row_easyocr(
+                row_img,
+                large_font=True,
+                min_conf=parser.OCR_MIN_CONF_WARMUP,
+            )
+        self.assertEqual(runtime_chars, [])
+        self.assertEqual(len(warmup_chars), 2)
 
 
 class TestTemplateMatcher(unittest.TestCase):
@@ -423,7 +446,9 @@ class TestRowCacheScoping(unittest.TestCase):
         image = np.zeros((280, 480, 3), dtype=np.uint8)
         image[5:15, 5:15, :] = 220
         parser = MCDUParser(image, source_id="captain")
-        parser._ocr_row_easyocr = lambda row_img, large_font: [("A", 10.0)]
+        parser._ocr_row_easyocr = (
+            lambda row_img, large_font, min_conf=None: [("A", 10.0)]
+        )
 
         saved_easyocr = self.mod._EASYOCR_AVAILABLE
         self.mod._EASYOCR_AVAILABLE = True

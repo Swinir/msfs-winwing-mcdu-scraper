@@ -576,6 +576,8 @@ class MCDUParser:
     #: at most 40.9% and inverted ones start at 47.8%, so this sits between
     #: them with roughly three points of margin either side.
     INVERTED_FILL_RATIO = 0.44
+    OCR_MIN_CONF_WARMUP = 0.15
+    OCR_MIN_CONF_RUNTIME = 0.35
 
     def __init__(self, image: np.ndarray,
                  columns: int = 24, rows: int = 14,
@@ -813,7 +815,8 @@ class MCDUParser:
     # ------------------------------------------------------------------
     #  EasyOCR — full image
     # ------------------------------------------------------------------
-    def _ocr_full_image_easyocr(self, scale: int = 3) -> Dict[int, list]:
+    def _ocr_full_image_easyocr(self, scale: int = 3,
+                                min_conf: float = OCR_MIN_CONF_RUNTIME) -> Dict[int, list]:
         try:
             processed = self._preprocess_for_easyocr(self.image, scale)
             pad = 16
@@ -826,7 +829,7 @@ class MCDUParser:
 
             row_results: Dict[int, list] = {}
             for bbox, text, conf in results:
-                if conf < 0.15:
+                if conf < min_conf:
                     continue
                 y_center = (sum(p[1] for p in bbox) / 4 - pad) / scale
                 row = max(0, min(int(y_center / self.cell_height), self.rows - 1))
@@ -851,7 +854,8 @@ class MCDUParser:
     #  EasyOCR — single row
     # ------------------------------------------------------------------
     def _ocr_row_easyocr(self, row_img: np.ndarray,
-                          large_font: bool = False) -> list:
+                          large_font: bool = False,
+                          min_conf: float = OCR_MIN_CONF_RUNTIME) -> list:
         try:
             scale = 3 if large_font else 4
             processed = self._preprocess_for_easyocr(row_img, scale)
@@ -864,7 +868,7 @@ class MCDUParser:
             )
             chars: list = []
             for bbox, text, conf in results:
-                if conf < 0.15:
+                if conf < min_conf:
                     continue
                 x_left = (min(p[0] for p in bbox) - pad) / scale
                 x_right = (max(p[0] for p in bbox) - pad) / scale
@@ -1154,7 +1158,10 @@ class MCDUParser:
                     _prev_count = matcher.template_count
                     for ws in warmup_scales:
                         # Full-image OCR at this scale
-                        full = self._ocr_full_image_easyocr(scale=ws)
+                        full = self._ocr_full_image_easyocr(
+                            scale=ws,
+                            min_conf=self.OCR_MIN_CONF_WARMUP,
+                        )
                         for row in unmatched_rows:
                             result = full.get(row, [])
                             cells = self._map_positions_to_cells(result)
@@ -1177,7 +1184,9 @@ class MCDUParser:
                         for ws2 in (3, 4, 5):
                             is_large = not self.is_small_font(row)
                             result = self._ocr_row_easyocr(
-                                row_images[row], large_font=is_large,
+                                row_images[row],
+                                large_font=is_large,
+                                min_conf=self.OCR_MIN_CONF_WARMUP,
                             )
                             cells = self._map_positions_to_cells(result)
                             for col in range(self.columns):
@@ -1235,7 +1244,9 @@ class MCDUParser:
 
             elif len(unmatched_rows) >= 8:
                 # Full-image OCR (one inference)
-                full = self._ocr_full_image_easyocr()
+                full = self._ocr_full_image_easyocr(
+                    min_conf=self.OCR_MIN_CONF_RUNTIME
+                )
                 for row in unmatched_rows:
                     result = full.get(row, [])
                     ocr_results[row] = result
@@ -1245,7 +1256,9 @@ class MCDUParser:
                 for row in unmatched_rows:
                     is_large = not self.is_small_font(row)
                     result = self._ocr_row_easyocr(
-                        row_images[row], large_font=is_large,
+                        row_images[row],
+                        large_font=is_large,
+                        min_conf=self.OCR_MIN_CONF_RUNTIME,
                     )
                     ocr_results[row] = result
                     _prev_row_imgs[(self.source_id, row)] = row_images[row].copy()
