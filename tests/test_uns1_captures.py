@@ -30,11 +30,25 @@ DATA = Path(__file__).parent / "data"
 WT = DATA / "uns1_wt.png"
 JF = DATA / "uns1_jf_bae146.png"
 
-#: Crops verified by eye against the grid overlay, for the 24x11 profile.
+#: Crops picked by eye against the grid overlay when Auto Detect could not
+#: handle these displays (ISSUES.md #22).  Kept as a reference point: the
+#: detector now scores better than both of them, and the tests below use it
+#: rather than these.
 VERIFIED_CROPS = {
     "uns1_wt.png": (53, 51, 504, 322),
     "uns1_jf_bae146.png": (0, 56, 388, 283),
 }
+
+
+def detected_crop(path, columns=24, rows=11):
+    """The crop Auto Detect produces, clamped to the image."""
+    image = load(path)
+    found = detector.detect_mcdu_region(image, columns=columns, rows=rows)
+    if not found:
+        return None
+    x, y, w, h = found
+    x, y = max(0, x), max(0, y)
+    return (x, y, min(w, image.shape[1] - x), min(h, image.shape[0] - y))
 
 
 def load(path):
@@ -107,14 +121,56 @@ class TestUns1Geometry(unittest.TestCase):
                             f"{path.name}: body row spacing varies by "
                             f"{spread:.0%}")
 
-    def test_a_uniform_grid_cannot_hold_every_row(self):
-        """Recorded limitation, not an aspiration.
+    def test_auto_detect_separates_every_row(self):
+        """Each text row must land in a cell of its own.
+
+        This is what #22 was really about: two rows sharing a cell merges
+        them, which no amount of good recognition recovers from.
+        """
+        for path in (WT, JF):
+            image = load(path)
+            crop = detected_crop(path)
+            self.assertIsNotNone(crop, f"{path.name}: nothing detected")
+            x, y, w, h = crop
+            mask = detector._ink_mask(image)
+            bands = detector._drop_chrome_remnants(
+                detector._split_touching_rows(
+                    detector._text_rows(mask), mask.sum(axis=1)),
+                detector._chrome_bottom(image))
+            uncut, distinct = detector._grid_quality(bands, float(y),
+                                                     h / 11, 11)
+            self.assertEqual(distinct, len(bands),
+                             f"{path.name}: rows share cells")
+
+    def test_auto_detect_beats_a_hand_picked_crop(self):
+        """The detector is now the better of the two, on both captures."""
+        for path in (WT, JF):
+            image = load(path)
+            mask = detector._ink_mask(image)
+            bands = detector._drop_chrome_remnants(
+                detector._split_touching_rows(
+                    detector._text_rows(mask), mask.sum(axis=1)),
+                detector._chrome_bottom(image))
+            auto = detected_crop(path)
+            manual = VERIFIED_CROPS[path.name]
+            auto_score = detector._grid_quality(bands, float(auto[1]),
+                                                auto[3] / 11, 11)
+            manual_score = detector._grid_quality(bands, float(manual[1]),
+                                                  manual[3] / 11, 11)
+            self.assertGreaterEqual(
+                auto_score, manual_score,
+                f"{path.name}: auto {auto_score} is worse than hand-picked "
+                f"{manual_score}",
+            )
+
+    def test_a_uniform_grid_still_cannot_hold_every_row(self):
+        """The underlying awkwardness has not gone away.
 
         An Airbus CDU is a true uniform grid - every text band fits inside
         one cell.  On these UNS-1 displays the title and bottom lines sit
-        off the body lattice, so some band is always clipped. If this test
-        ever starts failing, the displays are more regular than measured and
-        ISSUES.md #22 can be revisited.
+        off the body lattice, so some band is always clipped, however well
+        the grid is placed.  Detection now works despite that rather than
+        because it was solved.
         """
         worst = {}
         for path in (WT, JF):
@@ -139,11 +195,12 @@ class TestUns1Geometry(unittest.TestCase):
 
 
 @unittest.skipIf(not WT.exists() or not JF.exists(), "UNS-1 captures missing")
-class TestUns1ParsesFromAVerifiedCrop(unittest.TestCase):
-    """Given the crop a user would drag, the grid lands on the text."""
+class TestUns1ParsesFromTheDetectedCrop(unittest.TestCase):
+    """The grid Auto Detect produces lands on the text."""
 
     def _parser(self, path):
-        crop = VERIFIED_CROPS[path.name]
+        crop = detected_crop(path)
+        self.assertIsNotNone(crop, f"{path.name}: nothing detected")
         x, y, w, h = crop
         image = load(path)[y:y + h, x:x + w]
         return MCDUParser(image, columns=24, rows=11,

@@ -489,7 +489,7 @@ stores atomically, saving the outgoing one.
 
 ## #22 — Auto Detect does not handle UNS-1 displays
 
-**Type:** limitation · **Severity:** medium · **Status:** OPEN
+**Type:** limitation · **Severity:** medium · **Status:** FIXED
 
 Two real UNS-1 captures (Working Title, and Just Flight's BAe 146) showed
 that the pitch detector built for airliner CDUs does not transfer:
@@ -508,22 +508,43 @@ manages 6/10 (WT) and 9/10 (JF).
 five text rows merge into one 141px ink band. Row detection assumes a gap
 between lines, which holds for a CDU and not here.
 
-**What was tried.** Splitting merged bands at their internal minima,
-rejecting sparse frame bands, estimating pitch from the dominant spacing and
-from autocorrelation, seeding the lattice phase from a circular mean. Each
-helped one capture and hurt another; scored across all captures the changes
-came out *worse* overall than the current detector (51% against 69% on a
-band-containment metric), and degraded the validated A330 path from 100% to
-97%. They were reverted rather than shipped.
+**What was wrong.** Three separate faults, found by measuring rather than
+by tuning:
 
-**Where that leaves it.** Auto Detect is a convenience; the normal workflow
-is dragging the box, and the grid overlay shows immediately whether it lines
-up. For UNS-1 aircraft, drag it. Verified crops that parse correctly are
-recorded in `tests/test_uns1_captures.py`.
+1. *Merged rows were never split.* `_split_touching_rows` had been written
+   during the first attempt but was lost in a revert and never committed, so
+   the WT capture's five touching rows stayed a single 141px band and
+   nothing downstream could recover them.
+2. *A 9px stub of window chrome survived the ink mask* and, sitting above
+   every real row, forced the grid origin ten pixels high — putting a
+   boundary through every row below it.  It needs two signals to reject
+   safely: touching the chrome boundary is not enough, because the ATR's
+   title row begins exactly there; being much shorter than a normal row is
+   not enough either, because the ATR draws a 3px dashed separator.  A band
+   that is *both* is chrome.
+3. *The grid was never checked against the text.* The lattice fit produced a
+   plausible pitch and phase and stopped.
 
-**The real fix** is probably to stop assuming a uniform lattice for these
-displays and map detected text bands to rows directly. That is a different
-model from the current one and wants doing deliberately, not bolted on.
+**The fix that stuck.** Rather than tune estimators until every capture
+happened to pass — the mistake of the first attempt, which made things worse
+overall — the detector now *scores* candidate grids and keeps the best.
+`_refine_grid` and `_refine_columns` search a small neighbourhood of the
+estimate, ranked by how many text rows and glyphs sit wholly inside a cell.
+Because the starting estimate is the baseline they are scored against, they
+cannot regress a display that already worked.
+
+**Results.** All five previously-working captures detect unchanged.  On the
+UNS-1 captures every text row now lands in a cell of its own, and the
+detector scores *better than the hand-picked crops* that were recorded when
+this issue was opened: WT 5 rows uncut against 3, JF 9 against 1.  The tests
+were switched to exercise Auto Detect rather than those crops.  Detection
+takes about 35ms.
+
+**What has not changed.** These displays are still only approximately
+uniform grids — the title and bottom lines sit off the body lattice, so some
+band is always clipped however well the grid is placed.  Detection now works
+despite that rather than because it was solved, and
+`test_a_uniform_grid_still_cannot_hold_every_row` keeps that on the record.
 
 ---
 

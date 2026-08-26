@@ -93,10 +93,10 @@ the **Aircraft** dropdown:
 | UNS-1 (experimental) | 24x11 | Boeing | Working Title UNS-1 (Black Square TBM 850, Dukes, King Air); Just Flight BAe 146 / F28 UNS-1 |
 | Custom grid | you choose | AirbusThales | Anything else (GNS-XLS, CMA-900, …) — set the grid under Advanced |
 
-The UNS-1 grid is measured from real captures, but the display is only
-approximately a uniform grid, so drag the capture box yourself rather than
-relying on Auto Detect there. The Black Square **Starship** is *not*
-supported: its FMS-850 renders roughly twice the hardware's width.
+The UNS-1 grid is measured from real captures. The display is only
+approximately a uniform grid, so check the overlay after Auto Detect, but it
+no longer needs the box dragged by hand. The Black Square **Starship** is
+*not* supported: its FMS-850 renders roughly twice the hardware's width.
 
 Grids smaller than the hardware's 24x14 are padded top-left. Each profile
 keeps its own learned-glyph store, so switching aircraft never corrupts

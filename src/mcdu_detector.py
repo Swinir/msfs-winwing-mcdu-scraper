@@ -135,6 +135,78 @@ def _text_rows(mask: np.ndarray) -> List[Tuple[int, int]]:
     return kept
 
 
+def _split_touching_rows(rows: List[Tuple[int, int]],
+                         projection: np.ndarray) -> List[Tuple[int, int]]:
+    """Split bands holding several text rows with no blank line between them.
+
+    Row detection assumes a gap between lines, which holds for an airliner
+    CDU and not for a display with large glyphs and tight leading: on a
+    Working Title UNS-1 capture five text rows merge into a single 141px
+    band, and nothing downstream can recover the rows from it.
+
+    A band several times the height of a normal one is cut at its internal
+    projection minima, which fall in the valleys between lines.
+    """
+    if len(rows) < 2:
+        return rows
+
+    heights = sorted(bottom - top + 1 for top, bottom in rows)
+    # Lower quartile, because merged bands are the large outliers and a
+    # median would be dragged up by them.  Rules and frame noise are already
+    # filtered out, so the smallest survivors are real rows.  A CDU's label
+    # and content rows differ by around 25%, well under the 1.7x needed to
+    # trigger a split.
+    unit = heights[len(heights) // 4]
+    if unit < 2:
+        return rows
+
+    out: List[Tuple[int, int]] = []
+    for top, bottom in rows:
+        height = bottom - top + 1
+        count = int(round(height / unit))
+        if count <= 1 or height < unit * 1.7:
+            out.append((top, bottom))
+            continue
+
+        cuts = []
+        for i in range(1, count):
+            target = top + int(round(i * height / count))
+            lo = max(top + 2, target - unit // 3)
+            hi = min(bottom - 2, target + unit // 3)
+            if hi > lo:
+                cuts.append(lo + int(np.argmin(projection[lo:hi + 1])))
+
+        edges = [top] + sorted(set(cuts)) + [bottom]
+        for i in range(len(edges) - 1):
+            if edges[i + 1] > edges[i]:
+                out.append((edges[i], edges[i + 1]))
+    return out
+
+
+def _drop_chrome_remnants(rows: List[Tuple[int, int]],
+                          chrome_bottom: int) -> List[Tuple[int, int]]:
+    """Drop a stub of window chrome that survived the ink mask.
+
+    Needs two signals together, because either alone removes real content.
+    A band touching the chrome boundary is not enough: on the ATR the title
+    row begins exactly there.  Being much shorter than a normal row is not
+    enough either: the ATR draws a dashed separator only 3px tall, a fifth
+    of its median row.
+
+    A band that is *both* is chrome bleed.  On a UNS-1 capture a 9px stub at
+    the title bar's edge forced the grid origin ten pixels high, putting a
+    boundary through every row below it.
+    """
+    if len(rows) < 3 or chrome_bottom <= 0:
+        return rows
+    heights = [bottom - top + 1 for top, bottom in rows]
+    median = float(np.median(heights))
+    kept = [(top, bottom) for top, bottom in rows
+            if not (top <= chrome_bottom
+                    and (bottom - top + 1) < median * 0.5)]
+    return kept if len(kept) >= 2 else rows
+
+
 def _glyph_centers_per_row(mask: np.ndarray,
                            rows: List[Tuple[int, int]]) -> List[List[float]]:
     """Horizontal glyph centres, gathered one text row at a time.
@@ -260,6 +332,126 @@ def _rows_uncut(bounds, origin: float, pitch: float, n_cells: int) -> int:
                if not any(top < edge < bottom for edge in edges))
 
 
+def _glyph_runs(mask: np.ndarray, rows):
+    """Every glyph ink run on the display, as (starts, ends) arrays."""
+    runs: List[Tuple[int, int]] = []
+    for top, bottom in rows:
+        projection = mask[top:bottom + 1, :].sum(axis=0)
+        start = None
+        for i, has_ink in enumerate(projection > 0):
+            if has_ink and start is None:
+                start = i
+            elif not has_ink and start is not None:
+                if i - start >= 2:
+                    runs.append((start, i - 1))
+                start = None
+        if start is not None and len(projection) - start >= 2:
+            runs.append((start, len(projection) - 1))
+    if not runs:
+        return (np.empty(0), np.empty(0))
+    return (np.array([r[0] for r in runs], dtype=float),
+            np.array([r[1] for r in runs], dtype=float))
+
+
+def _spans_a_boundary(starts: np.ndarray, ends: np.ndarray,
+                      origin: float, pitch: float) -> np.ndarray:
+    """Whether each [start, end] span crosses a cell boundary.
+
+    Finds the first boundary strictly after each span's start and asks
+    whether it lands before the span's end.  The search below evaluates this
+    a few hundred times, so doing it in one array operation rather than a
+    nested loop is the difference between a snappy Auto Detect and a
+    visible pause.
+
+    "Strictly" matters: a boundary exactly on a span's edge touches the
+    glyph without dividing it, and counting those as cuts would make the
+    search prefer grids that are half a cell out.
+    """
+    next_edge = origin + (np.floor((starts - origin) / pitch) + 1.0) * pitch
+    return next_edge < ends
+
+
+def _column_quality(runs, origin: float, pitch: float, n_cells: int):
+    """Glyph runs that sit wholly inside one column of the grid."""
+    starts, ends = runs
+    if starts.size == 0:
+        return (-1, -1)
+    if (origin > starts.min() + 1
+            or origin + n_cells * pitch < ends.max() - 1):
+        return (-1, -1)
+    inside = int(np.count_nonzero(
+        ~_spans_a_boundary(starts, ends, origin, pitch)))
+    return (inside, 0)
+
+
+def _grid_quality(bounds, origin: float, pitch: float, n_cells: int):
+    """How well a candidate grid suits the text, higher being better.
+
+    Ranked by rows that sit wholly inside one cell, then by how many
+    distinct cells the rows occupy.  Uncut comes first deliberately: on a
+    capture whose bands are split more finely than its actual rows, chasing
+    distinct cells trades many clipped rows for one extra cell and makes
+    recognition worse.
+    """
+    tops = np.array([top for top, _ in bounds], dtype=float)
+    bottoms = np.array([bottom for _, bottom in bounds], dtype=float)
+    centres = (tops + bottoms) / 2.0
+    index = np.floor((centres - origin) / pitch).astype(int)
+    if index.min() < 0 or index.max() >= n_cells:
+        return (-1, -1)
+    uncut = int(np.count_nonzero(
+        ~_spans_a_boundary(tops, bottoms, origin, pitch)))
+    return (uncut, int(np.unique(index).size))
+
+
+def _refine_columns(runs, pitch: float, origin: float, n_cells: int):
+    """Nudge the column grid so fewer glyphs straddle a boundary.
+
+    The pitch from glyph spacings can be a couple of percent out, which by
+    the twenty-fourth column has drifted half a cell and started merging the
+    gaps between words.  Scored against the same starting point, so it can
+    only improve on it.
+    """
+    best_score = _column_quality(runs, origin, pitch, n_cells)
+    best = (pitch, origin)
+    for pitch_delta in np.arange(-0.06, 0.0601, 0.0025):
+        candidate_pitch = pitch * (1.0 + pitch_delta)
+        if candidate_pitch < 2:
+            continue
+        for origin_delta in np.arange(-0.55, 0.551, 0.05):
+            candidate_origin = origin + candidate_pitch * origin_delta
+            score = _column_quality(runs, candidate_origin,
+                                    candidate_pitch, n_cells)
+            if score > best_score:
+                best_score, best = score, (candidate_pitch, candidate_origin)
+    return best
+
+
+def _refine_grid(bounds, pitch: float, origin: float, n_cells: int):
+    """Nudge (pitch, origin) to suit the text better.
+
+    The lattice fit gets the pitch about right, but a display that is only
+    approximately uniform - a UNS-1, whose title and bottom lines sit off
+    the body lattice - can end up with boundaries through its glyphs even so.
+    A small search around the estimate finds a placement that cuts fewer
+    rows.  It can only improve on the starting point, since that is the
+    baseline it is scored against.
+    """
+    best_score = _grid_quality(bounds, origin, pitch, n_cells)
+    best = (pitch, origin)
+    for pitch_delta in np.arange(-0.08, 0.0801, 0.005):
+        candidate_pitch = pitch * (1.0 + pitch_delta)
+        if candidate_pitch < 2:
+            continue
+        for origin_delta in np.arange(-0.55, 0.551, 0.05):
+            candidate_origin = origin + candidate_pitch * origin_delta
+            score = _grid_quality(bounds, candidate_origin,
+                                  candidate_pitch, n_cells)
+            if score > best_score:
+                best_score, best = score, (candidate_pitch, candidate_origin)
+    return best
+
+
 def _choose_origin(centers, pitch: float, n_cells: int,
                    lo: float, hi: float) -> float:
     """Place the grid origin on the lattice so that it covers all the text."""
@@ -310,6 +502,10 @@ def _detect_via_pitch(image: np.ndarray, columns: int,
     height, width = mask.shape
 
     row_bounds = _text_rows(mask)
+    if len(row_bounds) < 2:
+        return None
+    row_bounds = _split_touching_rows(row_bounds, mask.sum(axis=1))
+    row_bounds = _drop_chrome_remnants(row_bounds, _chrome_bottom(image))
     if len(row_bounds) < 2:
         return None
 
@@ -367,6 +563,15 @@ def _detect_via_pitch(image: np.ndarray, columns: int,
     # the crop to the chrome boundary when the trim is a small fraction of a
     # cell; a larger overlap means the fit is wrong, and trimming would only
     # disguise it.
+    # Nudge the column grid so fewer glyphs straddle a boundary.
+    runs = _glyph_runs(mask, row_bounds)
+    col_pitch, refined_x = _refine_columns(runs, col_pitch, float(x), columns)
+    x = max(0, int(round(refined_x)))
+
+    # Nudge the row grid to cut through fewer glyphs before clamping.
+    row_pitch, refined_y = _refine_grid(row_bounds, row_pitch, float(y), rows)
+    y = max(0, int(round(refined_y)))
+
     chrome = _chrome_bottom(image)
     if y < chrome and (chrome - y) <= row_pitch * 0.35:
         y = chrome
