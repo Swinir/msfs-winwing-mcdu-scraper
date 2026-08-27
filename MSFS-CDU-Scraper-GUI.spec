@@ -10,8 +10,6 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    # The GUI is Qt now; tkinter would otherwise be pulled in and bloat
-    # the bundle. PySide6 is discovered by PyInstaller's own hooks.
     excludes=['tkinter', 'PyQt5', 'PyQt6'],
     noarchive=False,
     optimize=0,

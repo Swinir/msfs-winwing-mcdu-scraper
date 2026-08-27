@@ -8,8 +8,8 @@ window and sends it to WinWing CDU hardware via WebSocket.
 - Window capture with automatic backend selection (GDI, Windows Graphics
   Capture, or screen region) — no need to keep the window on top
 - Interactive screen-area selection with a 24x14 grid overlay and auto-detect
-- Character recognition by learned glyph templates, with EasyOCR bootstrap and
-  contour fallback for symbols
+- Character recognition in three passes: entry boxes and punctuation from
+  glyph geometry, then learned templates, then EasyOCR for the rest
 - Per-cell colour and font-size detection
 - MobiFlight-compatible data format
 - Aircraft profiles: Airbus MCDU, Boeing CDU, UNS-1, or a custom grid —
@@ -176,17 +176,26 @@ They run as independent pipelines.
 Not directly. Capture from the desktop mirror or a pop-out window on a monitor.
 
 **Why is the first run slow?**
-It spends roughly 30 seconds learning glyph templates from EasyOCR. Afterwards
+It spends roughly 35 seconds learning glyph templates from EasyOCR — eight
+passes over the page, at different magnifications and stroke weights, so a
+character has to be read the same way by more than one of them before it is
+learned. Afterwards
 recognition uses those templates and is fast. They are saved to `templates/`,
-so it happens once. The GUI's "Delete Templates" button forces a relearn.
+so it happens once per aircraft family. The GUI's "Delete Templates" button
+forces a relearn.
 
 ## How It Works
 
 1. **Capture** — grab the MCDU window. Backends are probed on the first frame:
    GDI (`PrintWindow`) → Windows Graphics Capture → mss (Desktop Duplication).
-2. **Parse** — split the image into a 24x14 grid and identify each cell:
-   learned templates first, then EasyOCR, then contour heuristics for symbols.
-   Colour and font size come from per-cell pixel analysis.
+2. **Parse** — split the image into a 24x14 grid and identify each cell.
+   Shape tests go first and settle the entry boxes and the punctuation
+   (`. : - / < > [ ] °`): those are the characters an OCR engine has the
+   least to go on for, and the ones an MCDU uses most. Learned templates take
+   the rest, and EasyOCR is asked only about cells neither could name — its
+   answer is refused if it proposes a shape the first pass examined and ruled
+   out. Colour and font size come from per-cell pixel analysis, and cells
+   whose glyphs are the same shape are made to read the same way.
 3. **Stabilise** — a cell only changes once its new value has held for several
    consecutive frames, which stops OCR jitter reaching the hardware.
 4. **Send** — forward the grid over WebSocket in MobiFlight's JSON format, but

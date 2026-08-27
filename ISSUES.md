@@ -622,6 +622,130 @@ display's true width cannot be read off them.
 
 ---
 
+## #25 — A cold start on a real MCDU read as garbage
+
+**Type:** bug · **Severity:** high · **Status:** FIXED
+
+A session against an Airbus INIT page came back as `CS S  S S I    D J /C J`,
+`C0 T INNEX` and ` SSSSSSSI`, and got worse the longer it ran.  Every test
+passed throughout, because every recognition test taught the template
+matcher from ground truth first and so never exercised the path a user
+actually takes: an empty store, EasyOCR warmup, and whatever comes out.
+
+Measured on that path — detect the region, parse from an empty store, score
+against the transcription — the three captures with ground truth read 90.8%,
+93.9% and 78.2%.  Five separate causes, each measured before and after:
+
+**Entry boxes were read as letters.**  Two thirds of a cold-start Airbus page
+is the hollow square that marks a field the crew must fill in.  EasyOCR has
+no box in its alphabet, so it named the nearest letter; those letters were
+then learned as templates and spread into genuine text.  The shape is
+unmistakable — ink all the way round the border and none inside — so it is
+now recognised structurally, ahead of both engines.  26 of 26 found across
+four cell sizes, and no letter, digit or symbol mistaken for one.
+
+**The geometry detector was wrong more often than right.**  An audit of the
+symbol detector over 2831 labelled glyphs found it fired 260 times and was
+wrong 113: `L` and `C` read as brackets, and `L`, `E`, `F`, `5` and `I` read
+as degree signs, because the tests asked only how big a glyph was and where
+it sat.  Rewritten around what actually separates each pair — a bracket's
+square corners and full-height stem, a degree sign's ring, a chevron's
+per-row ink profile — it now names 427 and claims nothing else.  Being
+reliable, its answer was promoted ahead of both engines rather than used as
+a last resort, and any other engine proposing a shape it examined and
+rejected is overruled.  That is what had put a bracket inside `ACTIVE` and
+`CONSUMPTION`.
+
+**Characters were dropped when two rounded to the same column.**  A
+character's position comes from dividing an OCR word's bounding box evenly,
+so a box a few per cent narrow accumulates error along the word until two
+characters claim one cell — and the loser was discarded, leaving a hole.
+That is what turned `+0.0/+0.0` into `+0. 0I+.0`.  Assignment is now by
+dynamic programming: order is preserved, characters may only land on cells
+that hold ink, and one may be dropped only when OCR returned more characters
+than there are cells to put them in.
+
+**Warmup ran the same OCR call twenty-five times.**  Five rounds over three
+scales, plus a row pass that looped over two scales and then ignored the
+variable.  The calls are deterministic and do not consult the template
+store, so rounds two to five recomputed round one exactly — and the
+"consensus" they fed counted one reading five times, which is how a single
+wrong reading cleared a two-vote bar on its own.  Now one pass per genuinely
+different view, eight in all: a third of the work, and agreement between
+views that means something.  A real session spent 145s here.  One of the
+eight thickens the strokes before the CRNN sees them, which is worth 1.7
+points on the Fokker's one-pixel CRT font and nothing on the Airbus - the
+point of a view is to be different, not better.
+
+**Learning got looser exactly where the evidence got thinner.**  `learn()`
+committed straight to the store once warmup was over, on the reasoning that
+the character set was by then mostly covered.  A warmup vote is one of six
+passes over the same pixels; a later one is a single unverified guess.  The
+session's store grew 80 → 90 → 122 → 126 templates while it ran and read
+worse with every one.  Consensus now applies after warmup too, and at a
+higher bar.
+
+The veto is scoped to what the pass reliably finds, and two real captures
+drew that line.  The arrows were dropped from it because the corpus holds
+one left arrow and no right one: the rule does not fire on the UNS-1's
+reverse-video ACCEPT prompt, and vetoing on that silence deleted an arrow a
+template had read correctly.  Round brackets were dropped for the same
+reason - folding them onto square ones caught a few `C` that EasyOCR had
+proposed as `(`, and deleted the real parentheses of the ATR's `GPS (UTC)`.
+
+The row cache was storing the wrong thing.  An unchanged row is served from
+`_prev_row_ocr` on every later frame, and that held the raw OCR reading -
+but the geometry pass and the template matcher both feed the assembled grid
+without passing through it, so a row lost its dashes, slashes and entry
+boxes the moment it went quiet.  It now caches what the row displayed.
+
+Two further changes, both measured rather than reasoned:
+
+- `_disambiguate_confusables` had been reinstated at three points including
+  `learn()`, undoing #5.  Against the real captures it corrupted 14 of 419
+  correct characters — `1`→`]` six times, `O`/`0`→`D` eight.  Two of its
+  branches (`N`/`H`, `S`/`5`) had never been reachable, and enabling them
+  cost another 30.  Scoped back to raw OCR proposals, with the `D`/`O` test
+  rebuilt on corner squareness and the `]`/`1` test deleted, the damage is 1
+  in 419 and it still repairs 97 of 126 injected pair errors.
+- Cells whose glyphs are the same shape now have to read as the same
+  character.  A page draws each character from one bitmap, so this is
+  evidence from the page itself rather than a dictionary of expected text,
+  and it holds for any aircraft.  Grouping at 0.93 NCC over the corpus
+  produced 538 groups covering 2283 glyphs with one impure group.
+
+Cold-start accuracy on the three captures with ground truth: **90.8% → 99.3%
+(A330), 93.9% → 100% (ATR), 78.2% → 93.3% (Fokker)**.  Warmup 80s → 35s.
+
+The store format version is bumped, so a store written by the old learner is
+discarded on first run rather than asking anyone to find and delete it.
+
+`tests/test_geometry_recognition.py` scores the geometry pass over every
+labelled glyph the project has and pins the assignment behaviour.  The
+thresholds were fitted to that same corpus, so the score is not
+out-of-sample; what it does guarantee is that the pass never trades a letter
+for a symbol, which is the failure that made the old version dangerous.
+
+---
+
+## #26 — The stabiliser promoted the jitter it exists to suppress
+
+**Type:** bug · **Severity:** medium · **Status:** FIXED
+
+`DisplayStabiliser` had been rewritten to promote whichever value occurred
+most often in a sliding window of five frames.  Three sightings out of five
+describes alternating noise as well as it describes a settled value, so a
+cell flickering `0 O 0 O O` promoted the `O` — the exact flicker on the
+physical CDU the class was written to prevent.  It also broke promotion at
+`stability_frames=1`, and with it the reverse-video flag change.
+
+**Fix:** restored the consecutive-run rule — a new value must be seen
+`stability_frames` times in a row, and any sighting of the displayed value
+resets the count.  `tests/test_stabiliser.py` now records why the windowed
+version was rejected.
+
+---
+
 ## #9 — Migrate the GUI from Tkinter to PySide6
 
 **Type:** feature · **Severity:** n/a · **Status:** FIXED

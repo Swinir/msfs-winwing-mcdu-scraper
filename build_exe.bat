@@ -6,12 +6,27 @@ echo MSFS MCDU Scraper - Build Executables (GitHub Actions Method)
 echo ============================================================
 echo.
 
-REM Check if PyInstaller is installed
-venv\Scripts\python.exe -c "import PyInstaller" 2>nul
+REM Install the same runtime and build dependencies used by GitHub Actions.
+echo Installing dependencies...
+venv\Scripts\python.exe -m pip install --upgrade pip
 if errorlevel 1 (
-    echo [ERROR] PyInstaller not found!
-    echo Installing PyInstaller...
-    venv\Scripts\pip.exe install pyinstaller
+    echo [ERROR] Failed to upgrade pip!
+    pause
+    exit /b 1
+)
+
+venv\Scripts\python.exe -m pip install -r requirements.txt
+if errorlevel 1 (
+    echo [ERROR] Failed to install runtime dependencies!
+    pause
+    exit /b 1
+)
+
+venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+if errorlevel 1 (
+    echo [ERROR] Failed to install build dependencies!
+    pause
+    exit /b 1
 )
 
 REM Clean previous builds
@@ -21,7 +36,7 @@ if exist build rmdir /s /q build
 echo.
 echo Building GUI executable...
 echo ----------------------------------------
-venv\Scripts\pyinstaller --name "MSFS-CDU-Scraper-GUI" ^
+venv\Scripts\python.exe -m PyInstaller --name "MSFS-CDU-Scraper-GUI" ^
     --onefile ^
     --windowed ^
     --icon=NONE ^

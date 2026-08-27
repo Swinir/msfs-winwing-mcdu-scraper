@@ -32,7 +32,7 @@ jobs:
     
     - name: Build GUI Executable
       run: |
-        pyinstaller --name "MSFS-CDU-Scraper-GUI" `
+        python -m PyInstaller --name "MSFS-CDU-Scraper-GUI" `
           --onefile `
           --windowed `
           --icon=NONE `

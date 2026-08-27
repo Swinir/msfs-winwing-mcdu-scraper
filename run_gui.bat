@@ -32,6 +32,7 @@ REM Run the GUI
 echo Starting MCDU Scraper GUI...
 echo.
 cd src
+set MSFS_SCRAPER_NO_MOBIFLIGHT=1
 python gui.py
 
 REM Deactivate virtual environment on exit
