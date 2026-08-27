@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import traceback
 from dataclasses import dataclass
@@ -48,18 +49,19 @@ from PySide6.QtWidgets import (
 
 from aircraft_profiles import PROFILES, AircraftProfile
 from config import Config
+from window_capture import WindowCapture, WINDOWS_AVAILABLE
 from mcdu_parser import set_template_store, _get_template_matcher
 from mcdu_parser import _prev_row_imgs, _prev_row_ocr
 from mobiflight_client import MobiFlightClient
 from pipeline import MCDUPipeline, PipelineSettings
 from region_selector import RegionSelectorDialog
-from window_capture import WindowCapture, WINDOWS_AVAILABLE
 
 MSFS_KEYWORDS = ('microsoft flight simulator', 'msfs', 'flight simulator',
                  'mcdu', 'cdu', 'fms', 'airbus', 'boeing', 'uns')
 
 #: Written alongside the log pane so a session can be reported after the fact.
 LOG_FILENAME = 'cdu_scraper.log'
+NO_MOBIFLIGHT = os.environ.get('MSFS_SCRAPER_NO_MOBIFLIGHT') == '1'
 
 
 class _LogEmitter(QObject):
@@ -102,6 +104,25 @@ class McduSpec:
     name: str
     capture: object
     websocket_uri: str
+
+
+class NoOpMobiFlightClient:
+    """Client used by the test launcher; accepts display data without sending."""
+
+    def __init__(self) -> None:
+        self.connected = asyncio.Event()
+        self.running = True
+
+    async def run(self) -> None:
+        self.connected.set()
+        while self.running:
+            await asyncio.sleep(0.5)
+
+    async def send_display_data(self, display_data: list) -> bool:
+        return True
+
+    async def close(self) -> None:
+        self.running = False
 
 
 class ScraperWorker(QObject):
@@ -154,11 +175,17 @@ class ScraperWorker(QObject):
 
     async def _drive(self, spec: McduSpec) -> None:
         """Connect one MCDU and run its pipeline until stopped."""
-        client = MobiFlightClient(
-            websocket_uri=spec.websocket_uri,
-            font=self.font,
-            max_retries=self.config.get_max_retries(),
-        )
+        if NO_MOBIFLIGHT:
+            client = NoOpMobiFlightClient()
+            logging.getLogger(__name__).info(
+                "[%s] Test mode: MobiFlight connection disabled", spec.name,
+            )
+        else:
+            client = MobiFlightClient(
+                websocket_uri=spec.websocket_uri,
+                font=self.font,
+                max_retries=self.config.get_max_retries(),
+            )
         client_task = asyncio.create_task(client.run())
         try:
             await client.connected.wait()
@@ -654,7 +681,9 @@ class MCDUScraperWindow(QMainWindow):
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.start)
         self.worker.connected.connect(
-            lambda name: self.log(f"[{name}] Connected to WinWing CDU")
+            lambda name: self.log(
+                f"[{name}] {'Test mode: MobiFlight disabled' if NO_MOBIFLIGHT else 'Connected to WinWing CDU'}"
+            )
         )
         self.worker.failed.connect(self._on_worker_failed)
         self.worker.finished.connect(self._on_worker_finished)

@@ -14,12 +14,22 @@ detector has to exclude.
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+
+sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+
+#: The Airbus entry box - a hollow rectangle marking a field the crew must
+#: fill in.  Taken from the charset rather than redeclared, so a fixture
+#: cannot end up testing a different character from the one the parser
+#: emits.  It is drawn rather than typed: no monospace TTF is guaranteed to
+#: carry U+2610, and the real display draws a plain rectangle anyway.
+from mcdu_charset import BALLOT_BOX
 
 COLUMNS = 24
 ROWS = 14
@@ -153,18 +163,50 @@ def alpha_numeric_page() -> MCDUPage:
             "OOO000III111BBB888SSS555",
             "ZZZ222DDD000GGGCCCQQQOOO",
             "LFPG EDDF KJFK EGLL LEMD",
-            "N0450 M.78 FL350 -56    ",
+            "N0450 M.78 FL350 -56°C  ",
             "RWY 26R ILS 110.30      ",
             "GS 452 TAS 460 HDG 271  ",
             "[  ]<-> 1234/5678       ",
             "5000FT  250KT  V/S -1800",
             "TOD 12:34  DIST 120NM   ",
-            "BRG 271 TRK 268 DA 4.2  ",
+            "BRG 271 TRK 268 DA 4.2° ",
             "<RETURN        CONFIRM>*",
             "                        ",
         ],
         colors=["w", "w", "g", "c", "w", "g", "a", "w",
                 "c", "w", "g", "w", "w", "w"],
+    )
+
+
+
+
+def airbus_init_page() -> MCDUPage:
+    """A320/A330 INIT A, the page a cold start actually opens on.
+
+    Two thirds of its content is amber entry boxes.  Recognising those as
+    letters is what a real capture showed the parser doing, so this page is
+    the fixture that keeps it honest.
+    """
+    box = BALLOT_BOX
+    return MCDUPage(
+        lines=[
+            "          INIT       1/2",
+            " CO RTE          FROM/TO",
+            box * 10 + "     " + box * 4 + "/" + box * 4,
+            "ALTN/CO RTE     INIT    ",
+            "----/----        REQUEST",
+            "FLT NBR                 ",
+            box * 8 + "       IRS INIT>",
+            "                        ",
+            "                        ",
+            "COST INDEX              ",
+            "20                 WIND>",
+            "CRZ FL/TEMP        TROPO",
+            "-----/---3         36090",
+            "                        ",
+        ],
+        colors=["w", "w", "a", "w", "a", "w", "a", "w",
+                "w", "w", "c", "w", "c", "w"],
     )
 
 
@@ -195,7 +237,23 @@ ALL_PAGES = {
     "flight_plan": flight_plan_page,
     "perf": perf_page,
     "alpha_numeric": alpha_numeric_page,
+    "airbus_init": airbus_init_page,
 }
+
+
+def _draw_entry_box(draw, col: int, row: int, cell_w: int, cell_h: int,
+                    small: bool, rgb) -> None:
+    """Draw one hollow entry box, centred in its cell.
+
+    Proportions taken from a real Airbus capture: roughly 60% of the cell
+    wide, 55% tall, one pixel of stroke at typical pop-out sizes.
+    """
+    bw = max(4, int(cell_w * 0.60))
+    bh = max(4, int(cell_h * (0.42 if small else 0.55)))
+    x = col * cell_w + (cell_w - bw) // 2
+    y = row * cell_h + (cell_h - bh) // 2
+    stroke = 2 if min(bw, bh) >= 12 else 1
+    draw.rectangle([x, y, x + bw - 1, y + bh - 1], outline=rgb, width=stroke)
 
 
 def render_mcdu(
@@ -236,6 +294,10 @@ def render_mcdu(
         rgb = COLOR_RGB[page.row_color(row)]
         for col, char in enumerate(line):
             if char == " ":
+                continue
+            if char == BALLOT_BOX:
+                _draw_entry_box(draw, col, row, cell_w, cell_h,
+                                page.is_small_row(row), rgb)
                 continue
             # Centre each glyph in its cell, as a fixed-pitch display does.
             box = draw.textbbox((0, 0), char, font=font)

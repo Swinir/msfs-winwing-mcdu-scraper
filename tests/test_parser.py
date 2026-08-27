@@ -407,17 +407,25 @@ class TestRowCacheScoping(unittest.TestCase):
 
 
 class TestTemplateAuthority(unittest.TestCase):
-    """A confirmed template match must outrank the geometry heuristic.
+    """Where the geometry disambiguator may and may not speak.
 
-    `_disambiguate_confusables` used to run on every emitted character,
-    including ones the template matcher had already identified.  That capped
-    recognition accuracy at the accuracy of the heuristic: a glyph the
-    heuristic read wrong could never be corrected by learning, because the
-    correction was re-applied on every frame.
+    `_disambiguate_confusables` is a rule of thumb about stroke shape.  It
+    used to run at three points - on the way into the template store, on
+    the way out of a template match, and over every assembled character -
+    which let it overrule evidence rather than supply it.  Measured against
+    the real captures it then corrupted 14 of 419 correct characters,
+    turning O and 0 into D and 1 into ], and because it ran at learn() time
+    those wrong labels became permanent templates.
+
+    It now runs in one place: on a character EasyOCR proposed and nothing
+    else confirmed.  A template is evidence from the pixels of a glyph that
+    already won a consensus, so it is left alone; so is the geometry pass's
+    own answer.  On the same measurement the damage falls to 1 in 419 while
+    it still repairs 97 of 126 injected pair errors.
     """
 
-    # A solid block: the D/O branch of the heuristic reads this as 'D',
-    # because its left edge is continuous and completely filled.
+    # A solid block with a straight, fully inked left edge: the D/O branch
+    # reads this as 'D'.
     @staticmethod
     def _block_cell():
         glyph = np.zeros((20, 20), dtype=np.uint8)
@@ -453,47 +461,55 @@ class TestTemplateAuthority(unittest.TestCase):
         self.mod._template_matcher = self._saved_matcher
         self._tmpdir.cleanup()
 
-    def test_learn_preserves_the_taught_label(self):
-        """learn() must store the label it was given, not a guess about it.
+    def test_learn_stores_the_label_it_was_given(self):
+        """A template carries the character the consensus agreed on.
 
-        A geometry heuristic used to run inside learn() and relabel glyphs by
-        stroke shape. It read this block as 'D', so teaching '0' silently
-        stored a 'D' template and every future zero came back as a D.
+        Relabelling on the way in is how a heuristic mistake becomes
+        permanent: every later frame then matches the same glyph and gets
+        the same wrong answer back, faster each time.
         """
-        self.matcher.learn("0", self._block_cell(), confidence=1.0)
-        self.matcher.learn("0", self._block_cell(), confidence=1.0)
+        for _ in range(self.matcher.CONSENSUS_MIN):
+            self.matcher.learn("0", self._block_cell(), confidence=1.0)
         self.assertIn("0", self.matcher._templates,
-                      "the taught label was rewritten during learn()")
-        self.assertNotIn("D", self.matcher._templates)
+                      "learn() did not store the label it was given")
+        self.assertNotIn("D", self.matcher._templates,
+                         "learn() relabelled the glyph on the way in")
 
-    def test_taught_label_survives_recognition(self):
-        self.matcher.learn("0", self._block_cell(), confidence=1.0)
-        self.matcher.learn("0", self._block_cell(), confidence=1.0)
+    def test_recognize_returns_the_stored_label(self):
+        """A match reports what was learned, not what geometry would guess."""
+        for _ in range(self.matcher.CONSENSUS_MIN):
+            self.matcher.learn("0", self._block_cell(), confidence=1.0)
         result = self.matcher.recognize(self._block_cell())
         self.assertIsNotNone(result)
-        self.assertEqual(result[0], "0")
+        self.assertEqual(result[0], "0",
+                         "recognize() overruled its own template")
 
-    def test_template_label_survives_parse_grid(self):
-        """The committed label wins over what the heuristic would decide."""
-        # Commit directly so the label is not itself disambiguated on the
-        # way in — this is exactly the case where the two disagree.
+    def test_template_output_is_not_second_guessed(self):
+        """parse_grid emits the template's character unchanged."""
         glyph = self.matcher._extract_glyph(self._block_cell())
         self.matcher._commit_template("O", self.matcher._normalize(glyph))
 
         result = MCDUParser(self.image, source_id="t").parse_grid()
         emitted = {cell[0] for cell in result if cell}
+        self.assertIn("O", emitted,
+                      "the template's answer was overruled downstream")
+        self.assertNotIn("D", emitted)
 
-        self.assertIn("O", emitted, "template label was discarded")
-        self.assertNotIn(
-            "D", emitted,
-            "geometry heuristic overrode a confirmed template match",
+    def test_disambiguator_still_corrects_a_raw_guess(self):
+        """It is not dead code - it is scoped.
+
+        Handed a character with nothing behind it, as an EasyOCR proposal
+        is, the D/O rule still reads this block as a D.
+        """
+        self.assertEqual(
+            self.mod._disambiguate_confusables(self._block_cell(), "O"), "D",
         )
 
     def test_recognize_is_consistent_across_hash_and_ncc_paths(self):
         """The fast hash path and the NCC path must agree on the label."""
         cell = self._block_cell()
         glyph = self.matcher._extract_glyph(cell)
-        self.matcher._commit_template("O", self.matcher._normalize(glyph))
+        self.matcher._commit_template("D", self.matcher._normalize(glyph))
 
         via_hash = self.matcher.recognize(cell)
         self.matcher._hash_cache.clear()   # force the NCC path
@@ -505,3 +521,21 @@ class TestTemplateAuthority(unittest.TestCase):
             via_hash[0], via_ncc[0],
             "hash-cache and NCC paths returned different characters",
         )
+
+    def test_a_late_guess_needs_more_agreement_than_a_warmup_one(self):
+        """After warmup a single OCR guess must not become a template.
+
+        It used to: learn() committed straight to the store once warmup was
+        over.  A real session watched the store grow from 80 to 126
+        templates while it ran, and the display got worse with it.
+        """
+        self.matcher._warmup_complete = True
+        for _ in range(self.matcher.CONSENSUS_MIN):
+            self.matcher.learn("0", self._block_cell(), confidence=0.7)
+        self.assertEqual(self.matcher.template_count, 0,
+                         "a post-warmup guess was learned on warmup evidence")
+        for _ in range(self.matcher.LATE_CONSENSUS_MIN
+                       - self.matcher.CONSENSUS_MIN):
+            self.matcher.learn("0", self._block_cell(), confidence=0.7)
+        self.assertEqual(self.matcher.template_count, 1,
+                         "corroborated evidence was still refused")

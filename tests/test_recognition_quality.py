@@ -5,9 +5,16 @@ These are the regression guard for the recognition work: they score the
 parser against ground truth rather than asserting on internals, so a change
 that makes recognition worse fails here even if every unit test still passes.
 
+Most of them teach the template matcher from ground truth first, which
+measures template matching but says nothing about the path a user is
+actually on: an empty store, EasyOCR warmup, and whatever comes out.  A
+whole class of failure hid in that gap - a real session read an Airbus INIT
+page as "CS S  S S I" and "C0 T INNEX" while every test here passed.  So
+TestColdStart at the bottom scores the cold path too.  It is slow, because
+it runs the warmup for real; that is the point of it.
+
 The thresholds are set below measured accuracy, not at it, so ordinary
-rendering jitter does not turn the suite red.  Measured at the time of
-writing: 98% / 90% / 100% per page, 96% mean.
+rendering jitter does not turn the suite red.
 """
 
 import tempfile
@@ -90,6 +97,11 @@ class TestRecognitionAccuracy(unittest.TestCase):
 
     def test_accuracy_after_single_page_warmup(self):
         self._teach("alpha_numeric")
+        # alpha_numeric is scored against its own teaching, so it is a
+        # template-matching floor, not an OCR one.  It was lowered to 0.90
+        # while the geometry disambiguator was overruling learned glyphs;
+        # with that scoped back the page reads exactly, and the floor
+        # returns to where it was.
         for name, floor in (("flight_plan", 0.90),
                             ("perf", 0.85),
                             ("alpha_numeric", 0.97)):
@@ -102,25 +114,38 @@ class TestRecognitionAccuracy(unittest.TestCase):
             )
 
     def test_accuracy_after_full_warmup(self):
-        """Having seen every glyph in both sizes, recognition is near-perfect."""
+        """Having seen every glyph in both sizes, recognition is exact.
+
+        This used to be capped at 92%, because the geometry disambiguator
+        re-tested every emitted character and flipped Consolas's straight-
+        edged '0' to 'D' and its '8' to 'B' however well they had been
+        learned.  Trusting a confirmed template - ISSUES.md #5 - lifts all
+        four pages to 100%, so the threshold is where the measurement is
+        rather than two thirds of the way down to it.
+        """
         self._teach(*ALL_PAGES)
         for name in ALL_PAGES:
             score = self._score(name)
             self.assertGreaterEqual(
-                score["char_accuracy"], 0.98,
+                score["char_accuracy"], 0.99,
                 f"{name}: {score['char_accuracy']:.1%}, "
                 f"confusions={score['confusions']}",
             )
 
-    def test_zero_is_not_relabelled_as_d(self):
-        """The old geometry heuristic turned nearly every 0 into a D."""
+    def test_a_learned_glyph_is_not_second_guessed(self):
+        """The confusable pairs survive being learned.
+
+        alpha_numeric is built out of them - OOO000III111BBB888SSS555 and
+        ZZZ222DDD000GGGCCCQQQOOO - in a font whose '0' has the straight
+        left edge the D/O rule looks for.  Once those glyphs are in the
+        store, nothing downstream may relabel them.
+        """
         self._teach("alpha_numeric")
         score = self._score("alpha_numeric")
-        for confusion in score["confusions"]:
-            self.assertNotEqual(confusion, "0->D",
-                                "zeros are being relabelled as D again")
-            self.assertNotEqual(confusion, "8->B",
-                                "eights are being relabelled as B again")
+        self.assertEqual(
+            score["confusions"], {},
+            f"a learned glyph was overruled: {score['confusions']}",
+        )
 
     def test_dashes_are_recognised(self):
         """A hyphen renders ~1px tall and used to be discarded outright."""
@@ -128,6 +153,26 @@ class TestRecognitionAccuracy(unittest.TestCase):
         score = self._score("flight_plan")
         self.assertNotIn("-> ", score["confusions"],
                          "dashes are being dropped again")
+
+    def test_label_dictionary_corrects_errors(self):
+        """The label dictionary should fix confusions on known label rows."""
+        # Teach the matcher, but intentionally poison the 'O' template
+        # so it consistently misreads 'O' as '0'
+        self._teach("flight_plan")
+        glyph = self.matcher._extract_glyph(self.matcher._templates["O"][0])
+        # Replace the 'O' template with '0'
+        del self.matcher._templates["O"]
+        self.matcher.learn("0", glyph, confidence=1.0)
+        self.matcher.learn("0", glyph, confidence=1.0)
+
+        # Parse the page, which will now have '0' where 'O' should be
+        score = self._score("flight_plan")
+
+        # The label dictionary should have fixed the '0' back to 'O' in 'CO RTE'
+        # etc., so the confusions should be lower than if we hadn't run it.
+        # Check that "FROM/TO" and "CO RTE" are not listed as confusions
+        self.assertNotIn("O->0", score["confusions"],
+                         "Label dictionary failed to correct O->0 on label row")
 
 
 class TestThinGlyphs(unittest.TestCase):
@@ -154,7 +199,7 @@ class TestThinGlyphs(unittest.TestCase):
             "-": self._cell(8, 1, 12),    # dash, mid height, 1px tall
             ".": self._cell(2, 2, 20),    # period, bottom
             "_": self._cell(9, 1, 20),    # underscore, bottom, 1px tall
-            "0": self._cell(12, 16, 4),   # a full-height glyph
+            "T": self._cell(12, 16, 4),   # a full-height glyph for contrast
         }
         for char, glyph in glyphs.items():
             self.matcher.learn(char, glyph, confidence=1.0)
@@ -273,6 +318,90 @@ class TestCharsetConsistency(unittest.TestCase):
             cell[:, :] = rgb
             self.assertIn(parser.detect_color(cell), Config.COLORS,
                           f"{rgb} produced a code MobiFlight does not define")
+
+
+class TestColdStart(unittest.TestCase):
+    """What a user gets on the first run: no templates, no ground truth.
+
+    Slow - each page pays a full EasyOCR warmup - and deliberately so.  This
+    is the only place the warmup, the template learner, the geometry pass
+    and the position assignment are all exercised together against known
+    text, which is the combination that failed in the field.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._saved = mcdu_parser._template_matcher
+        self._saved_imgs = dict(mcdu_parser._prev_row_imgs)
+        self._saved_ocr = dict(mcdu_parser._prev_row_ocr)
+        mcdu_parser._prev_row_imgs.clear()
+        mcdu_parser._prev_row_ocr.clear()
+        mcdu_parser._template_matcher = TemplateMatcher(
+            template_path=Path(self._tmpdir.name) / "cold.npz")
+
+    def tearDown(self):
+        mcdu_parser._template_matcher = self._saved
+        mcdu_parser._prev_row_imgs.clear()
+        mcdu_parser._prev_row_ocr.clear()
+        mcdu_parser._prev_row_imgs.update(self._saved_imgs)
+        mcdu_parser._prev_row_ocr.update(self._saved_ocr)
+        self._tmpdir.cleanup()
+
+    def _cold_score(self, name):
+        page = ALL_PAGES[name]()
+        parsed = MCDUParser(
+            render_mcdu(page, cell_size=CELL),
+            columns=page.columns, rows=page.rows,
+            source_id=name, small_font_rule=page.small_font_rule,
+        ).parse_grid()
+        return grid_accuracy(page.expected_cells(), parsed)
+
+    def test_an_airbus_cold_start_page_reads(self):
+        """INIT A: the page a cold start opens on, two thirds entry boxes.
+
+        The reported failure read its boxes as "CS S  S S I" and
+        " SSSSSSSI" and then learned those letters.  Measured 97% here.
+        """
+        score = self._cold_score("airbus_init")
+        self.assertGreaterEqual(
+            score["char_accuracy"], 0.90,
+            f"{score['char_accuracy']:.1%} ({score['correct']}/"
+            f"{score['total']}), confusions={score['confusions']}",
+        )
+
+    def test_entry_boxes_are_not_read_as_letters(self):
+        """The specific failure, asserted on its own.
+
+        A box misread is worse than a box missed: it used to be learned as
+        whichever letter EasyOCR guessed, and that template then spread the
+        error into genuine text.
+        """
+        from mcdu_charset import BALLOT_BOX
+        page = ALL_PAGES["airbus_init"]()
+        parsed = MCDUParser(render_mcdu(page, cell_size=CELL),
+                            source_id="boxes").parse_grid()
+        expected = page.expected_cells()
+        wrong = [
+            i for i, want in enumerate(expected)
+            if want and want[0] == BALLOT_BOX
+            and (not parsed[i] or parsed[i][0] != BALLOT_BOX)
+        ]
+        self.assertEqual(wrong, [], "entry boxes did not survive a cold start")
+
+    def test_a_dense_mixed_page_reads(self):
+        """Every confusable pair, at both font sizes.  Measured 92%."""
+        score = self._cold_score("alpha_numeric")
+        self.assertGreaterEqual(
+            score["char_accuracy"], 0.85,
+            f"{score['char_accuracy']:.1%} ({score['correct']}/"
+            f"{score['total']}), confusions={score['confusions']}",
+        )
+
+    def test_the_grid_lands_on_the_text(self):
+        """Occupancy does not depend on recognition and must be exact."""
+        for name in ("airbus_init", "alpha_numeric"):
+            score = self._cold_score(name)
+            self.assertGreaterEqual(score["occupancy_accuracy"], 0.99, name)
 
 
 if __name__ == "__main__":
