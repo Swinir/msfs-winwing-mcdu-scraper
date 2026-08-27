@@ -186,13 +186,15 @@ class MCDUPipeline:
 
     def __init__(self, name, capture, client, columns: int, rows: int,
                  settings: Optional[PipelineSettings] = None,
-                 small_font_rule: str = "labels_small") -> None:
+                 small_font_rule: str = "labels_small",
+                 page_labels: str = "") -> None:
         """
         Args:
             name: Identifier for this MCDU ('captain', 'copilot', ...).  Also
                 namespaces the parser's row caches, so it must be unique.
             capture: Object exposing capture() -> np.ndarray.
-            client: Object exposing async send_display_data(list).
+            client: Object exposing async send_display_data(list) -> bool,
+                where the return value says whether it was sent.
             columns: Grid width in characters.
             rows: Grid height in characters.
             settings: Tuning knobs; defaults are used when omitted.
@@ -203,6 +205,7 @@ class MCDUPipeline:
         self.columns = columns
         self.rows = rows
         self.small_font_rule = small_font_rule
+        self.page_labels = page_labels
         self.settings = settings or PipelineSettings()
 
         self._running = False
@@ -266,10 +269,13 @@ class MCDUPipeline:
         # profile grids out to it.
         display_data = pad_to_hardware(display_data, self.columns, self.rows)
 
-        # Only touch the hardware when the stabilised grid actually changed.
+        # Only touch the hardware when the stabilised grid actually changed
+        # - and only remember it as sent once it has been.  A failed send
+        # used to be recorded as a success, so a page that did not change
+        # again was never retried and the CDU kept showing the old one.
         if display_data != self._last_sent:
-            await self.client.send_display_data(display_data)
-            self._last_sent = list(display_data)
+            if await self.client.send_display_data(display_data):
+                self._last_sent = list(display_data)
 
         return display_data
 
@@ -288,6 +294,7 @@ class MCDUPipeline:
                 rows=self.rows,
                 source_id=self.name,
                 small_font_rule=self.small_font_rule,
+                page_labels=self.page_labels,
             )
             return parser.parse_grid()
 

@@ -135,6 +135,7 @@ class ScraperWorker(QObject):
     def __init__(self, config: Config, specs: List[McduSpec],
                  columns: int = 24, rows: int = 14,
                  small_font_rule: str = "labels_small",
+                 page_labels: str = "",
                  font: str = "AirbusThales") -> None:
         super().__init__()
         self.config = config
@@ -142,10 +143,14 @@ class ScraperWorker(QObject):
         self.columns = columns
         self.rows = rows
         self.small_font_rule = small_font_rule
+        self.page_labels = page_labels
         self.font = font
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._pipelines: List[MCDUPipeline] = []
         self._stopping = False
+        # Set from stop(), and waited on wherever this worker would
+        # otherwise block indefinitely.  Created inside the event loop.
+        self._stop_event: Optional[asyncio.Event] = None
 
     def start(self) -> None:
         """Entry point for the worker thread."""
@@ -165,11 +170,22 @@ class ScraperWorker(QObject):
             self.finished.emit()
 
     def stop(self) -> None:
-        """Ask every pipeline to stop.  Safe to call from the UI thread."""
+        """Ask the worker to finish.  Safe to call from the UI thread.
+
+        Stopping the pipelines is not enough on its own: until MobiFlight
+        answers there are no pipelines, only a coroutine waiting for the
+        connection, and the client retries for as long as it takes.  With
+        MobiFlight not yet running - the ordinary case on a first run -
+        pressing Stop left the worker waiting forever, and since the window
+        only leaves the running state when the worker finishes, both
+        buttons stayed disabled and the app had to be killed.
+        """
         self._stopping = True
         loop = self._loop
         if loop is None or not loop.is_running():
             return
+        if self._stop_event is not None:
+            loop.call_soon_threadsafe(self._stop_event.set)
         for pipeline in list(self._pipelines):
             loop.call_soon_threadsafe(pipeline.stop)
 
@@ -188,7 +204,8 @@ class ScraperWorker(QObject):
             )
         client_task = asyncio.create_task(client.run())
         try:
-            await client.connected.wait()
+            if not await self._wait_for(client.connected):
+                return          # Stop was pressed before MobiFlight answered
             self.connected.emit(spec.name)
 
             pipeline = MCDUPipeline(
@@ -198,6 +215,7 @@ class ScraperWorker(QObject):
                 columns=self.columns,
                 rows=self.rows,
                 small_font_rule=self.small_font_rule,
+                page_labels=self.page_labels,
                 settings=PipelineSettings(
                     fps=self.config.get_capture_fps(),
                     enable_caching=self.config.get_enable_caching(),
@@ -216,7 +234,25 @@ class ScraperWorker(QObject):
                 pass
             await client.close()
 
+    async def _wait_for(self, event: asyncio.Event) -> bool:
+        """Wait for *event*, giving up if the worker is asked to stop.
+
+        Returns:
+            True if the event fired, False if stop() got there first.
+        """
+        if self._stopping:
+            return False
+        waits = [asyncio.ensure_future(event.wait())]
+        if self._stop_event is not None:
+            waits.append(asyncio.ensure_future(self._stop_event.wait()))
+        done, pending = await asyncio.wait(
+            waits, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        return event.is_set() and not self._stopping
+
     async def _run(self) -> None:
+        self._stop_event = asyncio.Event()
         # Each MCDU gets its own pipeline so one does not throttle the other.
         # Its name also namespaces the parser's row caches, so the two must
         # differ -- see the dual-MCDU cache collision in ISSUES.md #1.
@@ -675,7 +711,8 @@ class MCDUScraperWindow(QMainWindow):
         self.worker = ScraperWorker(
             self.config, specs,
             columns=columns, rows=rows,
-            small_font_rule=profile.small_font_rule, font=font,
+            small_font_rule=profile.small_font_rule,
+            page_labels=profile.page_labels, font=font,
         )
         self.thread = QThread()
         self.worker.moveToThread(self.thread)

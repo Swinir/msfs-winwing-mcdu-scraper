@@ -2,7 +2,6 @@
 Configuration management for MSFS WinWing CDU Scraper
 """
 
-import os
 import yaml
 import logging
 from typing import Any, Dict, Optional
@@ -13,16 +12,16 @@ logger = logging.getLogger(__name__)
 
 class Config:
     """Configuration manager for MCDU scraper"""
-    
+
     # Grid specifications (CRITICAL - Must Match MobiFlight)
     CDU_COLUMNS = 24
     CDU_ROWS = 14
     CDU_CELLS = CDU_COLUMNS * CDU_ROWS  # 336 cells total
-    
+
     # Font sizes
     FONT_SIZE_LARGE = 0
     FONT_SIZE_SMALL = 1
-    
+
     # Colour codes, taken from MobiFlight's own FormatTable in
     # src/MobiFlightConnector/MobiFlight/Joysticks/WinCtrl/WinCtrlCduController.cs
     # and the reference headwind_a33_winwing_cdu.py script.
@@ -39,22 +38,22 @@ class Config:
         "w": "white",
         "y": "yellow",
     }
-    
+
     def __init__(self, config_path: Optional[str] = None):
         """
         Initialize configuration
-        
+
         Args:
             config_path: Path to configuration YAML file
         """
         if config_path is None:
             # Look for config.yaml in current directory, then parent
             config_path = self._find_config_file()
-        
+
         self.config_path = config_path
         self.config_data = self._load_config()
         self._validate_config()
-    
+
     def _find_config_file(self) -> str:
         """Find config.yaml in current or parent directories"""
         search_paths = [
@@ -63,28 +62,28 @@ class Config:
             Path.cwd() / "config.yaml.example",
             Path(__file__).parent.parent / "config.yaml.example"
         ]
-        
+
         for path in search_paths:
             if path.exists():
                 logger.info(f"Found configuration file at: {path}")
                 return str(path)
-        
+
         raise FileNotFoundError(
             "No config.yaml found. Please copy config.yaml.example to config.yaml "
             "and configure your screen regions."
         )
-    
+
     def _load_config(self) -> Dict[str, Any]:
         """Load configuration from YAML file"""
         try:
-            with open(self.config_path, 'r') as f:
+            with open(self.config_path, 'r', encoding='utf-8') as f:
                 config = yaml.safe_load(f)
             logger.info(f"Configuration loaded from {self.config_path}")
             return config
         except Exception as e:
             logger.error(f"Failed to load configuration: {e}")
             raise
-    
+
     def _validate_config(self):
         """Validate configuration has required fields.
 
@@ -97,7 +96,7 @@ class Config:
                     f"Missing required configuration section: {section}")
 
         logger.info("Configuration validation passed")
-    
+
     def get_captain_url(self) -> str:
         """Get captain WebSocket URL."""
         url = self.config_data['mobiflight'].get('captain_url')
@@ -128,16 +127,16 @@ class Config:
         forces one font regardless of profile.
         """
         return self.config_data['mobiflight'].get('font') or None
-    
+
     def get_max_retries(self) -> int:
         """Get max WebSocket connection retries"""
         return self.config_data['mobiflight'].get('max_retries', 3)
-    
+
     def get_capture_fps(self) -> int:
         """Get capture frame rate, clamped to [1, 120]."""
         raw = self.config_data['performance'].get('capture_fps', 30)
         return max(1, min(120, int(raw)))
-    
+
     def get_enable_caching(self) -> bool:
         """Check if caching is enabled"""
         return self.config_data['performance'].get('enable_caching', True)

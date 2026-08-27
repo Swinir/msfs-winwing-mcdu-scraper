@@ -23,8 +23,10 @@ def sanitise_display_data(display_data: list) -> list:
     """Map a 336-cell display grid onto glyphs the CDU font can render.
 
     Any character that is neither in ``_CDU_CHAR_MAP`` nor already in
-    ``_CDU_SAFE_CHARS`` becomes a space, so the CDU never receives an
-    unsupported glyph (which can freeze the display).
+    ``_CDU_SAFE_CHARS`` becomes a space.  Not for the device's safety - it
+    forwards whatever it is given, see the note in mcdu_charset - but so
+    that a glyph the font cannot draw shows as a blank rather than as
+    whatever the font happens to have at that code point.
 
     Args:
         display_data: List of elements, each either ``[]`` or
@@ -55,11 +57,11 @@ class MobiFlightClient:
     BASE_RETRY_DELAY = 2.0
     #: Upper bound on the backoff delay, in seconds.
     MAX_RETRY_DELAY = 30.0
-    
+
     def __init__(self, websocket_uri: str, font: str = "AirbusThales", max_retries: int = 3):
         """
         Initialize MobiFlight client
-        
+
         Args:
             websocket_uri: WebSocket URI (e.g., ws://localhost:8320/winwing/cdu-captain)
             font: Font name to use (default: AirbusThales)
@@ -77,12 +79,12 @@ class MobiFlightClient:
         self.max_retries = max_retries
         self.running = True
         self._connect_lock = asyncio.Lock()
-        
+
         logger.info(f"MobiFlightClient initialized for {websocket_uri}")
-    
+
     async def _connect(self):
         """Establish (or re-establish) the WebSocket connection.
-        
+
         Uses a lock so that concurrent callers (run() and send()) don't
         open two sockets at the same time.
         """
@@ -160,7 +162,7 @@ class MobiFlightClient:
                 self.retries += 1
                 self._log_retry(f"WebSocket error ({e})")
                 await asyncio.sleep(self._retry_delay())
-    
+
     async def _set_font(self):
         """Send font configuration to WinWing CDU"""
         try:
@@ -172,37 +174,41 @@ class MobiFlightClient:
             logger.info(f"Font set to: {self.font}")
         except Exception as e:
             logger.error(f"Failed to set font: {e}")
-    
-    async def send(self, data: str):
+
+    async def send(self, data: str) -> bool:
+        """Send one JSON message, reconnecting once if the socket has gone.
+
+        Returns:
+            True if the message reached the socket.  The caller needs to
+            know: the pipeline only sends a grid when it differs from the
+            last one it sent, so a failure it is not told about leaves the
+            CDU showing the previous page until the aircraft happens to
+            change something.
         """
-        Send JSON data to WinWing CDU.
-        If the connection is lost, attempt an immediate reconnect.
-        """
-        for attempt in range(2):  # try once, reconnect once if needed
+        for _ in range(2):      # try once, reconnect and try once more
             if self.websocket and self.connected.is_set():
                 try:
                     await self.websocket.send(data)
-                    logger.debug(f"Sent data: {data[:100]}...")
-                    return
-                except Exception as e:
-                    logger.warning(f"Send failed ({e}), reconnecting...")
+                    logger.debug("Sent %d bytes", len(data))
+                    return True
+                except Exception as exc:
+                    logger.warning("Send failed (%s), reconnecting …", exc)
                     self.websocket = None
                     self.connected.clear()
-            # Try to reconnect before the second attempt
             try:
                 await self._connect()
-            except Exception as e:
-                logger.error(f"Reconnect failed: {e}")
+            except Exception as exc:
+                logger.error("Reconnect failed: %s", exc)
                 await asyncio.sleep(1)
-        logger.error("Failed to send data after reconnect attempt")
-    
-    async def send_display_data(self, display_data: list):
-        """
-        Send display data to WinWing CDU.
+        logger.error("Failed to send data after a reconnect attempt")
+        return False
 
-        Sanitises every character before sending so the CDU never receives
-        a glyph that the AirbusThales font cannot render (which would
-        freeze or blank the display).
+    async def send_display_data(self, display_data: list) -> bool:
+        """
+        Send display data to WinWing CDU.  Returns True if it was sent.
+
+        Sanitises every character first, so the CDU is never asked to draw
+        a glyph its font does not carry.
 
         Args:
             display_data: List of 336 elements, each either [] or
@@ -211,14 +217,15 @@ class MobiFlightClient:
         """
         sanitised = sanitise_display_data(display_data)
 
-        non_empty = sum(1 for cell in sanitised if cell)
-        logger.debug(f"Sending display data: {non_empty}/{len(sanitised)} non-empty cells")
-        message = {
+        if logger.isEnabledFor(logging.DEBUG):
+            non_empty = sum(1 for cell in sanitised if cell)
+            logger.debug("Sending display data: %d/%d non-empty cells",
+                         non_empty, len(sanitised))
+        return await self.send(json.dumps({
             "Target": "Display",
-            "Data": sanitised
-        }
-        await self.send(json.dumps(message))
-    
+            "Data": sanitised,
+        }))
+
     async def close(self):
         """Close WebSocket connection"""
         self.running = False
