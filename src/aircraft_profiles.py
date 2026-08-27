@@ -65,7 +65,7 @@ class AircraftProfile:
 
     def template_path(self) -> Path:
         """Where this profile's learned glyphs live."""
-        from mcdu_parser import TemplateMatcher
+        from mcdu_templates import TemplateMatcher
         base = TemplateMatcher.DEFAULT_TEMPLATE_PATH.parent
         return base / self.template_filename
 

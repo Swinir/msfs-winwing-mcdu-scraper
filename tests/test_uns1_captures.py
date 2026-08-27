@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import mcdu_detector as detector
 import mcdu_parser
+import mcdu_templates
 from aircraft_profiles import PROFILES
 from mcdu_parser import MCDUParser
 
@@ -294,16 +295,16 @@ class TestUns1ColdStart(unittest.TestCase):
     def setUp(self):
         import tempfile
         self._tmpdir = tempfile.TemporaryDirectory()
-        self._saved = mcdu_parser._template_matcher
+        self._saved = mcdu_templates._template_matcher
         self._saved_imgs = dict(mcdu_parser._prev_row_imgs)
         self._saved_ocr = dict(mcdu_parser._prev_row_ocr)
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
-        mcdu_parser._template_matcher = mcdu_parser.TemplateMatcher(
+        mcdu_templates._template_matcher = mcdu_parser.TemplateMatcher(
             template_path=Path(self._tmpdir.name) / "uns1.npz")
 
     def tearDown(self):
-        mcdu_parser._template_matcher = self._saved
+        mcdu_templates._template_matcher = self._saved
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
         mcdu_parser._prev_row_imgs.update(self._saved_imgs)

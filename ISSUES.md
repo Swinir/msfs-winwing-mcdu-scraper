@@ -965,6 +965,111 @@ general.
 
 ---
 
+## #30 — A window border stole the Avro's first column
+
+**Type:** bug · **Severity:** medium · **Status:** FIXED
+
+Every row of the Avro GNLU capture came back with an invented character in
+column 0 — `I`, `1`, `6`, `3`.  The detected region started at x=0, and the
+first three pixel columns there are the window's own border: lit down 335
+of 335 rows.
+
+`_ink_mask` suppressed most of it, but 38 pixels survived, and that was
+enough to anchor the grid's origin on the border instead of on the text,
+which begins at x=17.  Every column was then a cell off.
+
+`_text_rows` has filtered horizontal rules from the start — a bezel line or
+an underline runs edge to edge where text is broken by the gaps between
+glyphs.  There was no vertical twin.  There is now: a column lit down more
+than 92% of the screen is a border and is removed from the mask, with one
+pixel either side for the antialiased flank.  Measured over the eight
+captures, a border column is lit 98-100% of the way down and the busiest
+column of text reaches 49%, so the threshold has room to spare.  Four of
+the eight captures have one, so this was never only about the Avro.
+
+Two details: the coverage is measured over the screen rows only, because
+flattening the chrome rows dims them and a border running the full height
+of the window stops looking solid if those rows are counted; and the
+one-pixel widening is a shift rather than a roll, so a border on the left
+edge does not blank the right one.
+
+The Avro now detects at x=17.  Its page went from
+
+    1AVRO-RJ8S    1 BIRCRBFT    1 NAV OATB    6(INDEX
+
+to
+
+    AVRO-RJ85      AIRCRAFT      NAV DATA     (INDEX
+
+---
+
+## #31 — A vs B: the third test was the one that worked
+
+**Type:** bug · **Severity:** medium · **Status:** FIXED
+
+#29 fixed *where* the confusable-pair rule runs.  This is about whether the
+A/B test in it was ever right, and it took three attempts to find out,
+because each was measured on too small a sample.
+
+1. **Top quarter against bottom quarter.**  The original.  Overlaps
+   outright — some A are as wide at the top as at the bottom.
+2. **Top quarter alone.**  Clean over the 105 glyphs available at the
+   time — A reached 0.67 at most, B started at 0.88.  Then the Avro was
+   included: its A has a flat top and reaches 1.00, indistinguishable from
+   a B that way.
+3. **The left edge.**  A B is built on a stem — ink in its left-hand
+   columns on every row from top to bottom.  An A's left side is a
+   diagonal, so it reaches the left edge only near the foot.  Over 60 A and
+   23 B drawn by five different displays, A never gets past 0.92 of the
+   height and B is at 1.00 every single time.
+
+The lesson is not about A and B.  It is that a shape rule measured against
+one font is a rule about that font: the second attempt looked perfect and
+was wrong, and only adding a display with a differently drawn A showed it.
+Anything of this kind added here should be scored across every capture in
+tests/data, not the convenient ones.
+
+B versus 8 now rewrites only the unmistakable cases and leaves the
+ambiguous middle as read, because those two genuinely overlap and
+`_correct_row_context` already separates letters from digits by token.
+
+Damage to correct characters stays at 1 in 419.  Fokker cold start 93.3% →
+94.1%; the Avro and both UNS-1 pages read their A correctly for the first
+time.
+
+---
+
+## #32 — mcdu_parser split into three modules
+
+**Type:** design · **Severity:** low · **Status:** FIXED
+
+2115 lines holding three separable jobs.  Now:
+
+- `mcdu_glyphs.py` (252) — naming a glyph by its shape alone: the entry
+  box, the punctuation the geometry pass owns, and the confusable-pair
+  rules.  Pure functions, no state.
+- `mcdu_templates.py` (419) — the learned-glyph store and the two rules
+  about it that were learned the hard way (#5 and #25).
+- `mcdu_parser.py` (1753) — cell extraction, the EasyOCR passes, and
+  assembling the grid.
+
+One coupling had to be made explicit rather than moved.  Switching the
+store must also discard the parser's row-level OCR cache, whose entries
+were read with the outgoing store's glyphs.  So `mcdu_templates.set_store`
+owns the store and reports whether it changed, and `mcdu_parser`'s
+`set_template_store` wraps it and clears what that invalidates.
+
+Names the rest of the project uses — `TemplateMatcher`,
+`_get_template_matcher`, `GEOMETRY_OWNED`, `is_entry_box` — are still
+importable from `mcdu_parser`, because where a glyph is named from is an
+implementation detail.  The one thing that could not be re-exported is the
+module-level singleton: rebinding `mcdu_parser._template_matcher` would no
+longer affect what the store returns, so tests that swap it in now address
+`mcdu_templates` directly.  That was deliberate — it fails loudly rather
+than silently doing nothing.
+
+---
+
 ## #9 — Migrate the GUI from Tkinter to PySide6
 
 **Type:** feature · **Severity:** n/a · **Status:** FIXED

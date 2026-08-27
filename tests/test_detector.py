@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 sys.path.insert(0, str(Path(__file__).parent))
 
 import mcdu_parser
+import mcdu_templates
 from mcdu_parser import MCDUParser, TemplateMatcher
 from mcdu_detector import detect_mcdu_region, _detect_via_pitch, _text_rows, _ink_mask
 from mcdu_fixtures import (
@@ -108,7 +109,7 @@ class TestDetectionFeedsRecognition(unittest.TestCase):
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
-        self._saved = mcdu_parser._template_matcher
+        self._saved = mcdu_templates._template_matcher
         self._saved_imgs = dict(mcdu_parser._prev_row_imgs)
         self._saved_ocr = dict(mcdu_parser._prev_row_ocr)
         mcdu_parser._prev_row_imgs.clear()
@@ -116,10 +117,10 @@ class TestDetectionFeedsRecognition(unittest.TestCase):
         self.matcher = TemplateMatcher(
             template_path=Path(self._tmpdir.name) / "t.npz"
         )
-        mcdu_parser._template_matcher = self.matcher
+        mcdu_templates._template_matcher = self.matcher
 
     def tearDown(self):
-        mcdu_parser._template_matcher = self._saved
+        mcdu_templates._template_matcher = self._saved
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
         mcdu_parser._prev_row_imgs.update(self._saved_imgs)
@@ -173,13 +174,13 @@ class TestParserToleratesImperfectCrops(unittest.TestCase):
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
-        self._saved = mcdu_parser._template_matcher
+        self._saved = mcdu_templates._template_matcher
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
         self.matcher = TemplateMatcher(
             template_path=Path(self._tmpdir.name) / "t.npz"
         )
-        mcdu_parser._template_matcher = self.matcher
+        mcdu_templates._template_matcher = self.matcher
         self.page = ALL_PAGES["alpha_numeric"]()
         self.screen = render_mcdu(self.page, cell_size=(20, 24))
         parser = MCDUParser(self.screen, source_id="teach")
@@ -192,7 +193,7 @@ class TestParserToleratesImperfectCrops(unittest.TestCase):
                 self.matcher.learn(char, binary, confidence=1.0)
 
     def tearDown(self):
-        mcdu_parser._template_matcher = self._saved
+        mcdu_templates._template_matcher = self._saved
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
         self._tmpdir.cleanup()

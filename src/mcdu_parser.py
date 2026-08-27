@@ -23,13 +23,25 @@ from __future__ import annotations
 import time
 import logging
 import importlib.util
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 
 from mcdu_charset import BALLOT_BOX, OCR_ALLOWLIST, RENDERABLE
+# Re-exported: callers and tests have always reached these through the
+# parser, and where a glyph is named from is an implementation detail.
+from mcdu_glyphs import (       # noqa: F401
+    GEOMETRY_OWNED,
+    _disambiguate_confusables,
+    is_entry_box,
+    vetoable,
+)
+import mcdu_templates
+from mcdu_templates import (    # noqa: F401
+    TemplateMatcher,
+    _get_template_matcher,
+)
 from mcdu_labels import apply_label_corrections
 
 logger = logging.getLogger(__name__)
@@ -69,219 +81,6 @@ _OCR_FIXUPS: Dict[str, str] = {
 }
 
 _EASYOCR_ALLOWLIST = OCR_ALLOWLIST
-
-
-# ---------------------------------------------------------------------------
-#  Entry boxes
-# ---------------------------------------------------------------------------
-#  An Airbus CDU marks every field the crew must fill in with a hollow
-#  rectangle, and a cold-start page is mostly made of them: INIT A alone
-#  shows 22.  Neither EasyOCR nor the template matcher can name that glyph -
-#  a CRNN has no box in its alphabet and picks whichever letter is closest,
-#  which a real capture showed reading as "CS S  S S I" and " SSSSSSSI".
-#  Worse, those wrong letters were then learned as templates, so the error
-#  spread to genuine text.
-#
-#  The shape is unmistakable, though: ink all the way round the border and
-#  none at all inside.  No letter does that - O and D curve away from their
-#  corners, so their top and bottom rows do not span the full width.  So it
-#  is recognised structurally, ahead of both engines, and cells that match
-#  are never offered to the template learner.
-
-
-#: The characters the geometry pass is trusted to have the last word on.
-#: It runs over every cell that has ink, and on the 2831-glyph corpus it
-#: named all of these that were present and claimed nothing else - so when
-#: it has not named a cell, the cell is not one of these shapes, and any
-#: other engine proposing one is contradicted by the pixels rather than
-#: merely unconfirmed.
-#:
-#: The arrows are deliberately absent.  The detector does read them, but
-#: the corpus holds a single left arrow and no right one - enough to
-#: recognise a shape, nowhere near enough to overrule someone else about
-#: it.  On the UNS-1's reverse-video ACCEPT prompt the rule does not fire,
-#: and vetoing on that silence deleted an arrow a template had read
-#: correctly.
-GEOMETRY_OWNED = frozenset(
-    [".", ":", "-", "/", "<", ">", "[", "]", "°", BALLOT_BOX]
-)
-
-#: Round brackets are deliberately absent, though the CDU draws them as
-#: square ones (see SUBSTITUTIONS).  Folding them in caught a few C that
-#: EasyOCR had proposed as "(" - and deleted the real parentheses of the
-#: ATR's "GPS (UTC)", because a round bracket has no arms and the
-#: bracket rule rightly does not fire on one.  The veto only covers
-#: shapes the pass actually finds.
-
-
-def vetoable(char: Optional[str]) -> bool:
-    """True when *char* names a shape the geometry pass would have found."""
-    return bool(char) and char in GEOMETRY_OWNED
-
-
-def is_entry_box(binary: np.ndarray, cell_h: int, cell_w: int) -> bool:
-    """True when *binary* holds a hollow rectangle rather than a character.
-
-    Args:
-        binary: One preprocessed cell, ink as 255.
-        cell_h: Height of the cell the glyph came from.
-        cell_w: Width of the cell the glyph came from.
-    """
-    coords = cv2.findNonZero(binary)
-    if coords is None:
-        return False
-    x, y, w, h = cv2.boundingRect(coords)
-
-    # Big enough to be a box rather than a dash, dot or degree sign, and
-    # roughly as tall as it is wide.  A real box fills a little over half
-    # the cell each way.
-    if h < max(4, cell_h * 0.28) or w < max(4, cell_w * 0.28):
-        return False
-    if not 0.35 <= w / h <= 1.9:
-        return False
-
-    glyph = binary[y:y + h, x:x + w]
-    band = lambda a: float(np.count_nonzero(a)) / max(a.size, 1)
-    edge_h = max(1, h // 8)
-    edge_w = max(1, w // 8)
-
-    # Every border must be continuous: measured per row/column rather than
-    # as a fill ratio, so a two-pixel stroke in an eight-pixel band still
-    # scores 1.0.
-    top = float(np.count_nonzero(glyph[:edge_h].any(axis=0))) / w
-    bottom = float(np.count_nonzero(glyph[-edge_h:].any(axis=0))) / w
-    left = float(np.count_nonzero(glyph[:, :edge_w].any(axis=1))) / h
-    right = float(np.count_nonzero(glyph[:, -edge_w:].any(axis=1))) / h
-    if min(top, bottom, left, right) < 0.80:
-        return False
-
-    # ...and the middle must be empty.  This is what rejects 0, 8, B and D,
-    # every one of which puts ink through the centre of the glyph.
-    inner = glyph[h // 4:h - h // 4, w // 4:w - w // 4]
-    return inner.size > 0 and band(inner) <= 0.12
-
-
-# ---------------------------------------------------------------------------
-#  Structural disambiguation for commonly confused character pairs
-# ---------------------------------------------------------------------------
-
-def _disambiguate_confusables(cell_binary: np.ndarray, char: str) -> str:
-    """Correct EasyOCR / template confusions using glyph geometry.
-
-    EasyOCR confuses D/O, A/B, B/8 and I// because at cell resolution
-    those glyphs share an outline.  Each test below looks at the one
-    structural feature that actually separates the pair.
-
-    Every rule here is measured against the real captures before it is
-    kept.  Tests for N/H and S/5 used to sit below these, unreachable
-    because the guard above never listed those characters; making them
-    reachable turned 18 correct N into H and 12 correct S into 5, so they
-    were deleted rather than repaired.
-
-    Applied only to characters EasyOCR proposed.  It is deliberately not
-    applied to template matches or to learned labels: a template already
-    is evidence from these pixels, and letting a heuristic relabel it on
-    the way into the store made every later frame worse.
-
-    A ']' vs '1' test used to live here too and was removed - measured
-    against the real captures it corrupted six genuine '1's to buy one
-    repair, and the contour detector already tells brackets apart by
-    their arms.
-    """
-    if char not in ('D', 'O', '0', 'A', 'B', '8', 'I', '/'):
-        return char
-
-    coords = cv2.findNonZero(cell_binary)
-    if coords is None:
-        return char
-    x, y, bw, bh = cv2.boundingRect(coords)
-    if bw < 3 or bh < 3:
-        return char
-    glyph = cell_binary[y : y + bh, x : x + bw]
-    h, w = glyph.shape
-
-    # ------------------------------------------------------------------
-    #  D vs O  (and 0)
-    # ------------------------------------------------------------------
-    if char in ('D', 'O', '0'):
-        # D has square corners on the left and a stem that runs the whole
-        # height; O and 0 curve away from both left corners.  Thresholds
-        # measured over 340 D/O/0 glyphs from the real captures and the
-        # rendered pages: 87 of 87 D correct, 1 of 253 O/0 misread.  The
-        # previous test (left-strip fill alone) turned real O and 0 into D
-        # on eight of the real capture's glyphs.
-        left_cols = max(2, w // 6)
-        left_rows = np.any(glyph[:, :left_cols] > 0, axis=1)
-        left_continuity = float(np.count_nonzero(left_rows)) / h
-        corner = max(1, min(w, h) // 4)
-        fill = lambda a: float(np.count_nonzero(a)) / max(a.size, 1)
-        top_left = fill(glyph[:corner, :corner])
-        bottom_left = fill(glyph[-corner:, :corner])
-
-        if min(top_left, bottom_left) >= 0.60 and left_continuity >= 0.94:
-            return 'D'
-        if char == 'D':
-            return 'O'
-        # An O or a 0 without square corners is left as OCR read it: the
-        # two are told apart by context, not by shape.
-
-    # ------------------------------------------------------------------
-    #  A vs B vs 8
-    # ------------------------------------------------------------------
-    if char in ('A', 'B', '8'):
-        # How much of the glyph's width the top quarter covers.  An A comes
-        # to a point or a short flat, a B and an 8 are square across the
-        # top.  Measured over 105 labelled glyphs from the captures and the
-        # rendered pages, A reaches 0.67 at most and B and 8 start at 0.75,
-        # so this separates A from both with room to spare.
-        #
-        # The previous test compared the top against the *bottom* quarter.
-        # That ratio overlaps - some A are as wide at the top as at the
-        # bottom - and when it failed to name an A the glyph fell through
-        # to the B/8 test below, whose left edge is not continuous on an A
-        # either, so it came out as 8.  Which is how every A on the UNS-1
-        # and Avro pages read as B, and then as 8.
-        top_span = float(np.count_nonzero(
-            glyph[:max(1, h // 4)].any(axis=0))) / w
-        if top_span <= 0.72:
-            return 'A'
-        if char == 'A':
-            char = 'B'      # square-topped; decide between B and 8 below
-
-    if char in ('B', '8'):
-        # A B has a straight stem down its left edge; an 8 curves away from
-        # it at the waist and the corners.  The two overlap in the middle
-        # of that range, so only the unmistakable cases are rewritten and
-        # anything else is left as it was read.
-        left_cols = max(2, w // 5)
-        strip = glyph[:, :left_cols]
-        continuity = float(np.count_nonzero(np.any(strip > 0, axis=1))) / h
-        fill = float(np.count_nonzero(strip)) / max(strip.size, 1)
-        if continuity >= 0.95 and fill >= 0.90:
-            return 'B'
-        if continuity <= 0.80:
-            return '8'
-        return char
-
-    # ------------------------------------------------------------------
-    #  I vs / (and 1)
-    # ------------------------------------------------------------------
-    if char in ('I', '/'):
-        # / has a strong diagonal: top-right ink, bottom-left ink.
-        # I is vertically symmetric: ink centred on every row.
-        if h > 3 and w > 3:
-            tr = np.count_nonzero(glyph[: h // 2, w // 2 :])
-            bl = np.count_nonzero(glyph[h // 2 :, : w // 2])
-            tl = np.count_nonzero(glyph[: h // 2, : w // 2])
-            br = np.count_nonzero(glyph[h // 2 :, w // 2 :])
-            diag_score = (tr + bl) / max(tl + br + 1, 1)
-            if diag_score > 2.0:
-                return '/'
-            else:
-                return 'I'
-
-    return char
-
 
 
 # ---------------------------------------------------------------------------
@@ -413,386 +212,19 @@ def row_empty_to_occupied(flags: List[bool]) -> List[bool]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Template Matcher
-# ═══════════════════════════════════════════════════════════════════════════
-
-class TemplateMatcher:
-    """
-    Template-based character recognition for MCDU fixed-font displays.
-
-    Learns character patterns from confirmed OCR/contour results and then
-    uses hash + normalised cross-correlation matching for instant
-    recognition on subsequent frames.  CPU-only — no GPU required.
-    """
-
-    NORM_SIZE = (20, 28)       # (width, height) of normalised glyph
-    MATCH_THRESHOLD = 0.85     # min NCC score to accept
-    FALLBACK_THRESHOLD = 0.70  # ...and to accept as a last resort
-    MAX_TEMPLATES = 5          # max variants stored per character
-    CONSENSUS_MIN = 2          # min votes to promote a candidate template
-    LATE_CONSENSUS_MIN = 3     # ...and after warmup, when evidence is thinner
-
-    #: Bumped whenever the normalisation changes shape-compatibility, or
-    #: whenever what a stored label means changes.  Templates saved under an
-    #: older format are discarded on load rather than silently compared
-    #: against glyphs normalised a different way.
-    #:
-    #: Version 4 is the second kind.  Stores written before it were built by
-    #: a learner that relabelled glyphs on the way in and, once warmup was
-    #: over, committed a single unverified guess straight to disk - a real
-    #: session grew one from 80 to 126 templates while it ran, and read
-    #: worse with every one.  Those labels cannot be trusted, so every store
-    #: is rebuilt on first run rather than asking anyone to find and delete
-    #: the file.
-    FORMAT_VERSION = 4
-
-    #: Where learned glyphs are persisted when no explicit path is given.
-    DEFAULT_TEMPLATE_PATH = (
-        Path(__file__).resolve().parent.parent / "templates" / "mcdu_templates.npz"
-    )
-
-    def __init__(self, template_path: Optional[Path] = None) -> None:
-        """
-        Args:
-            template_path: Where to load/save learned glyphs.  Defaults to
-                ``DEFAULT_TEMPLATE_PATH``.  Tests must pass a temp path —
-                otherwise they inherit whatever the user learned by running
-                the app, and their results depend on the host machine.
-        """
-        self._hash_cache: Dict[bytes, str] = {}
-        self._templates: Dict[str, List[np.ndarray]] = {}
-        self._candidates: Dict[bytes, Dict[str, int]] = {}
-        self._dirty = False
-        self._warmup_complete = False
-        self._template_path = Path(
-            template_path if template_path is not None
-            else self.DEFAULT_TEMPLATE_PATH
-        )
-        self._load()
-
-    # ----- recognition ---------------------------------------------------
-
-    def recognize(self, cell_binary: np.ndarray) -> Optional[Tuple[str, float]]:
-        """Return ``(char, confidence)`` or ``None``."""
-        glyph = self._extract_glyph(cell_binary)
-        if glyph is None:
-            return None
-
-        norm = self._normalize(glyph)
-        key = norm.tobytes()
-
-        # Fast: exact hash
-        if key in self._hash_cache:
-            return (self._hash_cache[key], 1.0)
-
-        # Slower: NCC against all templates
-        best_char: Optional[str] = None
-        best_score = 0.0
-        for char, templates in self._templates.items():
-            for tmpl in templates:
-                score = self._ncc(norm, tmpl)
-                if score > best_score:
-                    best_score = score
-                    best_char = char
-
-        if best_score >= self.MATCH_THRESHOLD and best_char is not None:
-            # No geometry heuristic here.  A template match is evidence from
-            # the pixels of a glyph already confirmed by consensus; running
-            # _disambiguate_confusables over it would let a rule of thumb
-            # overrule that, and it would disagree with the hash-cache path
-            # above, which returns the stored label untouched.
-            self._hash_cache[key] = best_char
-            return (best_char, best_score)
-
-        return None
-
-    def best_match(self, cell_binary: np.ndarray,
-                   exclude: Optional[frozenset] = None,
-                   ) -> Optional[Tuple[str, float]]:
-        """The closest template regardless of MATCH_THRESHOLD.
-
-        Used only as a last resort, for a cell that plainly holds ink
-        but that neither engine would name.  Leaving such a cell blank
-        throws away what the store already knows about the glyph, and a
-        hole in the middle of a word reads worse on the CDU than a
-        plausible letter does.  Never learned from.
-
-        Args:
-            cell_binary: The preprocessed cell.
-            exclude: Characters this cell cannot hold.  The caller knows
-                that when geometry has already ruled a shape out - and
-                the store may well hold a template mislabelled as that
-                very shape, which is what put a bracket inside
-                CONSUMPTION.  Skipping it leaves the next best answer
-                rather than no answer.
-        """
-        glyph = self._extract_glyph(cell_binary)
-        if glyph is None:
-            return None
-        norm = self._normalize(glyph)
-        cached = self._hash_cache.get(norm.tobytes())
-        if cached is not None and not (exclude and cached in exclude):
-            return (cached, 1.0)
-        best_char, best_score = None, 0.0
-        for char, templates in self._templates.items():
-            if exclude and char in exclude:
-                continue
-            for tmpl in templates:
-                score = self._ncc(norm, tmpl)
-                if score > best_score:
-                    best_score, best_char = score, char
-        if best_char is None:
-            return None
-        return (best_char, best_score)
-
-    # ----- learning ------------------------------------------------------
-
-    def learn(self, char: str, cell_binary: np.ndarray,
-              confidence: float = 1.0) -> None:
-        """Record a confirmed character template (consensus-based).
-
-        During warmup (before ``_warmup_complete``), each glyph shape
-        accumulates votes.  A template is only promoted once the same
-        character reaches ``CONSENSUS_MIN`` votes with a clear majority.
-        After warmup, new characters are accepted directly (the bulk of
-        the character set is already safely templated).
-        """
-        if confidence < 0.60 or not char or not char.strip():
-            return
-        char = char.upper()
-        if len(char) != 1:
-            return
-
-        glyph = self._extract_glyph(cell_binary)
-        if glyph is None:
-            return
-
-        norm = self._normalize(glyph)
-        key = norm.tobytes()
-
-        # Already known — skip
-        if key in self._hash_cache:
-            return
-
-        # ---- candidate voting ----
-        #
-        # This applies after warmup as well.  It used to commit a glyph
-        # straight to the store once warmup was over, on the reasoning that
-        # the character set was by then mostly covered - but that is exactly
-        # backwards.  A warmup vote is one of fifteen passes over the same
-        # pixels; a later one is a single unverified guess, so it needs more
-        # corroboration, not less.  A real session showed the cost: the
-        # store grew 80 -> 90 -> 122 -> 126 templates while it ran, and the
-        # display got steadily worse as wrong glyphs were matched and
-        # re-matched from the cache.  Templates are permanent, so an
-        # unconfirmed one is not a small mistake.
-        if key not in self._candidates:
-            self._candidates[key] = {}
-        votes = self._candidates[key]
-        votes[char] = votes.get(char, 0) + 1
-
-        needed = (self.CONSENSUS_MIN if not self._warmup_complete
-                  else self.LATE_CONSENSUS_MIN)
-        best_char = max(votes, key=votes.get)
-        total = sum(votes.values())
-        if (votes[best_char] >= needed
-                and votes[best_char] > total * 0.6):
-            self._commit_template(best_char, norm)
-            del self._candidates[key]
-            logger.debug(
-                "Promoted '%s' (%d/%d votes, %d total templates)",
-                best_char, votes[best_char], total, self.template_count,
-            )
-
-    def _commit_template(self, char: str, norm: np.ndarray) -> None:
-        """Directly commit a normalised glyph as a template."""
-        key = norm.tobytes()
-        self._hash_cache[key] = char
-
-        if char not in self._templates:
-            self._templates[char] = []
-
-        for existing in self._templates[char]:
-            if self._ncc(norm, existing) > 0.95:
-                return
-
-        if len(self._templates[char]) >= self.MAX_TEMPLATES:
-            return
-
-        self._templates[char].append(norm)
-        self._dirty = True
-
-    # ----- persistence ---------------------------------------------------
-
-    def save(self) -> None:
-        if not self._dirty:
-            return
-        try:
-            self._template_path.parent.mkdir(parents=True, exist_ok=True)
-            data = {"__format__": np.array([self.FORMAT_VERSION])}
-            for char, templates in self._templates.items():
-                # Use hex-encoded UTF-8 to handle multi-character keys
-                # (e.g. "<>" from OCR) as well as single characters.
-                hex_key = char.encode("utf-8").hex()
-                for i, tmpl in enumerate(templates):
-                    data[f"h{hex_key}_{i}"] = tmpl
-            np.savez_compressed(str(self._template_path), **data)
-            self._dirty = False
-            logger.info(
-                "Saved %d templates for %d characters → %s",
-                self.template_count, len(self._templates), self._template_path,
-            )
-        except Exception as exc:
-            logger.warning("Failed to save templates: %s", exc)
-
-    def _load(self) -> None:
-        if not self._template_path.exists():
-            return
-        try:
-            data = np.load(str(self._template_path))
-
-            stored_format = int(data["__format__"][0]) if "__format__" in data.files else 1
-            if stored_format != self.FORMAT_VERSION:
-                logger.warning(
-                    "Discarding templates from %s: saved in format v%d, this "
-                    "build normalises glyphs differently (v%d). They will be "
-                    "relearned on the next warmup.",
-                    self._template_path, stored_format, self.FORMAT_VERSION,
-                )
-                return
-
-            for key in data.files:
-                if key == "__format__":
-                    continue
-                prefix = key.split("_")[0]
-                if prefix.startswith("h"):
-                    # New format: hex-encoded UTF-8
-                    char = bytes.fromhex(prefix[1:]).decode("utf-8")
-                else:
-                    # Legacy format: cXXXX (single Unicode codepoint)
-                    char = chr(int(prefix[1:], 16))
-                if char not in self._templates:
-                    self._templates[char] = []
-                self._templates[char].append(data[key])
-            if self.template_count > 0:
-                self._warmup_complete = True
-            logger.info(
-                "Loaded %d templates for %d characters",
-                self.template_count, len(self._templates),
-            )
-        except Exception as exc:
-            logger.warning("Failed to load templates: %s", exc)
-
-    # ----- helpers -------------------------------------------------------
-
-    def _normalize(self, glyph: np.ndarray) -> np.ndarray:
-        """Scale a glyph into NORM_SIZE, preserving its aspect ratio.
-
-        Stretching each glyph to fill the box destroyed the one feature that
-        separates the thin symbols: a dash, a period, an underscore and a
-        solid block all became the same all-white rectangle and matched each
-        other with NCC 1.0.  Scaling by the smaller factor and centring the
-        result on a blank canvas keeps them distinct.
-        """
-        target_w, target_h = self.NORM_SIZE
-        h, w = glyph.shape[:2]
-        if w < 1 or h < 1:
-            return np.zeros((target_h, target_w), dtype=np.uint8)
-
-        scale = min(target_w / w, target_h / h)
-        new_w = max(1, int(round(w * scale)))
-        new_h = max(1, int(round(h * scale)))
-        resized = cv2.resize(glyph, (new_w, new_h), interpolation=cv2.INTER_AREA)
-
-        canvas = np.zeros((target_h, target_w), dtype=np.uint8)
-        y0 = (target_h - new_h) // 2
-        x0 = (target_w - new_w) // 2
-        canvas[y0:y0 + new_h, x0:x0 + new_w] = resized
-
-        _, binary = cv2.threshold(canvas, 127, 255, cv2.THRESH_BINARY)
-        return binary
-
-    @staticmethod
-    def _extract_glyph(binary: np.ndarray) -> Optional[np.ndarray]:
-        coords = cv2.findNonZero(binary)
-        if coords is None:
-            return None
-        x, y, w, h = cv2.boundingRect(coords)
-        # A hyphen renders as few as 6x1 px in a 20x24 cell.  Requiring 2px
-        # in both axes silently discarded every dash on the display.
-        if w < 1 or h < 1:
-            return None
-        # 1-px padding so glyphs at slightly different positions within
-        # the cell normalise to a consistent shape after resize.
-        H, W = binary.shape
-        pad = 1
-        return binary[max(0, y - pad) : min(H, y + h + pad),
-                      max(0, x - pad) : min(W, x + w + pad)]
-
-    @staticmethod
-    def _ncc(a: np.ndarray, b: np.ndarray) -> float:
-        """Normalised cross-correlation (same-size images)."""
-        if a.shape != b.shape:
-            return 0.0
-        af = a.ravel().astype(np.float32)
-        bf = b.ravel().astype(np.float32)
-        am, bm = af.mean(), bf.mean()
-        astd, bstd = af.std(), bf.std()
-        if astd < 1e-6 or bstd < 1e-6:
-            return 1.0 if (astd < 1e-6 and bstd < 1e-6) else 0.0
-        return float(np.dot(af - am, bf - bm) / (len(af) * astd * bstd))
-
-    @property
-    def template_count(self) -> int:
-        return sum(len(v) for v in self._templates.values())
-
-    def reset(self) -> None:
-        """Wipe all in-memory templates and candidates."""
-        self._hash_cache.clear()
-        self._templates.clear()
-        self._candidates.clear()
-        self._warmup_complete = False
-        self._dirty = False
-        logger.info("Template matcher reset — all templates cleared")
-
-
-# Active matcher.  One store is live at a time: glyphs learned from one
-# font must never be matched against another, so switching aircraft profile
-# switches the store (see set_template_store).
-_template_matcher: Optional[TemplateMatcher] = None
-_template_store_path: Optional[Path] = None
-
-
-def _get_template_matcher() -> TemplateMatcher:
-    global _template_matcher
-    if _template_matcher is None:
-        _template_matcher = TemplateMatcher(template_path=_template_store_path)
-    return _template_matcher
-
-
-def set_template_store(path) -> None:
-    """Make *path* the active learned-glyph store.
-
-    Saves the outgoing store first, and clears the row-level OCR caches:
-    cached results were produced by the old store's glyphs.
-    A no-op when *path* is already active.
-    """
-    global _template_matcher, _template_store_path
-    path = Path(path)
-    if _template_matcher is not None and _template_store_path == path:
-        return
-    if _template_matcher is not None:
-        _template_matcher.save()
-    _template_store_path = path
-    _template_matcher = TemplateMatcher(template_path=path)
-    _prev_row_imgs.clear()
-    _prev_row_ocr.clear()
-    logger.info("Template store switched to %s (%d templates)",
-                path.name, _template_matcher.template_count)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
 #  EasyOCR reader with multi-GPU support
+def set_template_store(path) -> None:
+    """Switch the learned-glyph store, and drop what the old one produced.
+
+    A thin wrapper over mcdu_templates.set_store: the row-level OCR cache
+    below belongs to this module, and its entries were read with the
+    outgoing store's glyphs.
+    """
+    if mcdu_templates.set_store(path):
+        _prev_row_imgs.clear()
+        _prev_row_ocr.clear()
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _get_easyocr_reader():
@@ -1173,7 +605,16 @@ class MCDUParser:
         return piece if piece.any() else None
 
     def _extract_glyph_binary(self, row: int, col: int) -> np.ndarray:
-        """Preprocess the cell, then reclaim any of its glyph that spilled."""
+        """Preprocess the cell, then reclaim any of its glyph that spilled.
+
+        The window is widened in both directions.  Sideways is where most
+        of the spill is, but not all of it: on the Working Title UNS-1 the
+        D of DATE runs into the row above, and measured through the cell
+        alone it comes out 16x22 where the D of DATABASE - the same glyph,
+        clear of its neighbours - is 16x19.  Read that way its left edge is
+        no longer a continuous stem, so it looks like an O, which is what
+        DATE was coming back as.
+        """
         cell = self.extract_cell(row, col)
         inverted = self.is_inverted_cell(cell)
         level = self._cell_ink_level(cell, inverted)
@@ -1181,38 +622,47 @@ class MCDUParser:
         if binary.size == 0 or not binary.any():
             return binary
 
-        pad = int(round(self.cell_width * self.GLYPH_MARGIN))
-        if pad < 1:
+        pad_x = int(round(self.cell_width * self.GLYPH_MARGIN))
+        pad_y = int(round(self.cell_height * self.GLYPH_MARGIN))
+        if pad_x < 1 and pad_y < 1:
             return binary
 
         left, right = self._col_edges[col], self._col_edges[col + 1]
         top, bottom = self._row_edges[row], self._row_edges[row + 1]
-        start = max(0, left - pad)
-        stop = min(self.image.shape[1], right + pad)
-        if stop - start <= right - left:
+        x0 = max(0, left - pad_x)
+        x1 = min(self.image.shape[1], right + pad_x)
+        y0 = max(0, top - pad_y)
+        y1 = min(self.image.shape[0], bottom + pad_y)
+        if x1 - x0 <= right - left and y1 - y0 <= bottom - top:
             return binary                    # nothing to widen into
 
         # The cell's own ink level, applied to the wider window, so a glyph
         # binarises the same whether or not it needed reclaiming.
-        window = self._binarise(
-            self.image[top:bottom, start:stop], level, inverted)
+        window = self._binarise(self.image[y0:y1, x0:x1], level, inverted)
         count, labels, stats, centroids = cv2.connectedComponentsWithStats(
             window, 8)
         if count <= 1:
             return binary
 
         # A component belongs to this cell when its centre is nearer this
-        # cell's centre than the neighbouring cells'.
-        cell_centre = (left + right) / 2.0 - start
+        # cell's centre than any neighbour's, on both axes.
+        centre_x = (left + right) / 2.0 - x0
+        centre_y = (top + bottom) / 2.0 - y0
         keep = np.zeros(window.shape, dtype=np.uint8)
         kept = False
-        saw_component = False
         for i in range(1, count):
             x = stats[i, cv2.CC_STAT_LEFT]
             width = stats[i, cv2.CC_STAT_WIDTH]
-            if x + width <= left - start or x >= right - start:
+            y = stats[i, cv2.CC_STAT_TOP]
+            height = stats[i, cv2.CC_STAT_HEIGHT]
+            if (x + width <= left - x0 or x >= right - x0
+                    or y + height <= top - y0 or y >= bottom - y0):
                 continue                     # no overlap with the cell at all
-            saw_component = True
+            if height > self.cell_height * self.MERGED_GLYPH_WIDTH:
+                # Rows that run together.  There is no equivalent of the
+                # horizontal split here - a glyph has no natural waist
+                # across the row boundary - so the lattice cut stands.
+                return binary
             if width > self.cell_width * self.MERGED_GLYPH_WIDTH:
                 # Touching neighbours.  Cut them apart where the ink is
                 # thinnest rather than at the lattice edge, which is where
@@ -1220,13 +670,14 @@ class MCDUParser:
                 # bridge between two glyphs is a pixel or two wide and sits
                 # wherever their side bearings happen to meet.
                 piece = self._split_touching(
-                    window, labels == i, left - start, right - start)
+                    window, labels == i, left - x0, right - x0)
                 if piece is None:
                     return binary
                 keep[piece] = 255
                 kept = True
                 continue
-            if abs(centroids[i][0] - cell_centre) > self.cell_width / 2.0:
+            if (abs(centroids[i][0] - centre_x) > self.cell_width / 2.0
+                    or abs(centroids[i][1] - centre_y) > self.cell_height / 2.0):
                 continue                     # nearer a neighbour's centre
             keep[labels == i] = 255
             kept = True
@@ -1238,8 +689,7 @@ class MCDUParser:
             # invented for a few pixels.  Anything bigger is kept: the
             # ownership test is a guide, not an oracle, and losing a real
             # character costs more than an occasional stray one.
-            inside = binary.any(axis=0)
-            span = int(np.count_nonzero(inside))
+            span = int(np.count_nonzero(binary.any(axis=0)))
             if span <= max(1, int(self.cell_width * self.SLIVER_WIDTH)):
                 return np.zeros_like(binary)
             return binary

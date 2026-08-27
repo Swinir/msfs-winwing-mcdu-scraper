@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import numpy as np
 
 import mcdu_parser
+import mcdu_templates
 from mcdu_parser import MCDUParser, TemplateMatcher, _correct_row_context, _correct_token
 from mcdu_fixtures import (
     ALL_PAGES,
@@ -46,18 +47,18 @@ class TestRecognitionAccuracy(unittest.TestCase):
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
-        self._saved = mcdu_parser._template_matcher
+        self._saved = mcdu_templates._template_matcher
         self.matcher = TemplateMatcher(
             template_path=Path(self._tmpdir.name) / "t.npz"
         )
-        mcdu_parser._template_matcher = self.matcher
+        mcdu_templates._template_matcher = self.matcher
         self._saved_imgs = dict(mcdu_parser._prev_row_imgs)
         self._saved_ocr = dict(mcdu_parser._prev_row_ocr)
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
 
     def tearDown(self):
-        mcdu_parser._template_matcher = self._saved
+        mcdu_templates._template_matcher = self._saved
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
         mcdu_parser._prev_row_imgs.update(self._saved_imgs)
@@ -331,16 +332,16 @@ class TestColdStart(unittest.TestCase):
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
-        self._saved = mcdu_parser._template_matcher
+        self._saved = mcdu_templates._template_matcher
         self._saved_imgs = dict(mcdu_parser._prev_row_imgs)
         self._saved_ocr = dict(mcdu_parser._prev_row_ocr)
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
-        mcdu_parser._template_matcher = TemplateMatcher(
+        mcdu_templates._template_matcher = TemplateMatcher(
             template_path=Path(self._tmpdir.name) / "cold.npz")
 
     def tearDown(self):
-        mcdu_parser._template_matcher = self._saved
+        mcdu_templates._template_matcher = self._saved
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
         mcdu_parser._prev_row_imgs.update(self._saved_imgs)

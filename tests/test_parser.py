@@ -11,6 +11,8 @@ import tempfile
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
+import mcdu_templates
+
 from mcdu_parser import MCDUParser, TemplateMatcher
 from mcdu_detector import detect_mcdu_region
 from config import Config
@@ -319,11 +321,11 @@ class TestRowCacheScoping(unittest.TestCase):
         # Swap the module singleton for a matcher backed by a temp file, so
         # this test neither reads nor writes the user's real template store.
         self._tmpdir = tempfile.TemporaryDirectory()
-        self._saved_matcher = mcdu_parser._template_matcher
+        self._saved_matcher = mcdu_templates._template_matcher
         self.matcher = TemplateMatcher(
             template_path=Path(self._tmpdir.name) / "t.npz"
         )
-        mcdu_parser._template_matcher = self.matcher
+        mcdu_templates._template_matcher = self.matcher
 
         # parse_grid() short-circuits to a contour-only path when there is
         # no OCR engine *and* no templates.  Seed one template so the
@@ -442,11 +444,11 @@ class TestTemplateAuthority(unittest.TestCase):
         mcdu_parser._prev_row_ocr.clear()
 
         self._tmpdir = tempfile.TemporaryDirectory()
-        self._saved_matcher = mcdu_parser._template_matcher
+        self._saved_matcher = mcdu_templates._template_matcher
         self.matcher = TemplateMatcher(
             template_path=Path(self._tmpdir.name) / "t.npz"
         )
-        mcdu_parser._template_matcher = self.matcher
+        mcdu_templates._template_matcher = self.matcher
 
         self.image = np.zeros((280, 480, 3), dtype=np.uint8)
         for col in range(10):

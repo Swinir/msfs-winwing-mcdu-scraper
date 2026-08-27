@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 sys.path.insert(0, str(Path(__file__).parent))
 
 import mcdu_parser
+import mcdu_templates
 from mcdu_detector import detect_mcdu_region
 from mcdu_parser import MCDUParser, TemplateMatcher
 from mobiflight_client import sanitise_display_data
@@ -136,14 +137,14 @@ class TestInvertedGlyphsAreReadable(unittest.TestCase):
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
-        self._saved = mcdu_parser._template_matcher
+        self._saved = mcdu_templates._template_matcher
         self._saved_imgs = dict(mcdu_parser._prev_row_imgs)
         self._saved_ocr = dict(mcdu_parser._prev_row_ocr)
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
         self.matcher = TemplateMatcher(
             template_path=Path(self._tmpdir.name) / "rv.npz")
-        mcdu_parser._template_matcher = self.matcher
+        mcdu_templates._template_matcher = self.matcher
 
         image = load("uns1_wt.png")
         x, y, w, h = INVERTED[0][1]
@@ -158,7 +159,7 @@ class TestInvertedGlyphsAreReadable(unittest.TestCase):
             self.matcher.learn(char, binary, confidence=1.0)
 
     def tearDown(self):
-        mcdu_parser._template_matcher = self._saved
+        mcdu_templates._template_matcher = self._saved
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
         mcdu_parser._prev_row_imgs.update(self._saved_imgs)
