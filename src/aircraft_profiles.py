@@ -144,10 +144,12 @@ PROFILES: Dict[str, AircraftProfile] = {
             template_filename="mcdu_templates_uns1.npz",
             notes=(
                 "24x11, measured from Working Title and Just Flight BAe 146 "
-                "captures. Auto Detect is unreliable on these displays — "
-                "drag the box yourself and check the grid overlay lines up. "
-                "Unlike an airliner CDU the UNS-1 is only approximately a "
-                "uniform grid, so expect the odd clipped row."
+                "captures. Unlike an airliner CDU the UNS-1 is only "
+                "approximately a uniform grid: measured, 45% of its glyphs "
+                "cross a cell edge, against none on the ATR. Recognition "
+                "reads a wider window to cope (ISSUES.md #28), and the "
+                "Working Title page scores 91% from cold. Still the hardest "
+                "display here - check the grid overlay before starting."
             ),
         ),
         AircraftProfile(

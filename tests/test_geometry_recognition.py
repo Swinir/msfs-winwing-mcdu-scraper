@@ -352,7 +352,7 @@ class TestGeometryVeto(unittest.TestCase):
                             source_id="veto")
 
         # Teach '[' from the I, exactly as a bad warmup would.
-        binary = parser._preprocess_cell(parser.extract_cell(0, 3))
+        binary = parser.cell_binary(0, 3)
         for _ in range(self.matcher.CONSENSUS_MIN):
             self.matcher.learn("[", binary, confidence=1.0)
         self.assertIn("[", self.matcher._templates, "test setup failed")

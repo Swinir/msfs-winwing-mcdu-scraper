@@ -153,7 +153,7 @@ class TestInvertedGlyphsAreReadable(unittest.TestCase):
         for col, char in enumerate(WT_ROW10):
             if char == " ":
                 continue
-            binary = parser._preprocess_cell(parser.extract_cell(10, col))
+            binary = parser.cell_binary(10, col)
             self.matcher.learn(char, binary, confidence=1.0)
             self.matcher.learn(char, binary, confidence=1.0)
 

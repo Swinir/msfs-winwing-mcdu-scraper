@@ -158,7 +158,7 @@ class TestAtrRecognition(unittest.TestCase):
                     continue
                 if parser.is_empty_cell(parser.extract_cell(row, col)):
                     continue        # borderline cell; nothing to learn from
-                binary = parser._preprocess_cell(parser.extract_cell(row, col))
+                binary = parser.cell_binary(row, col)
                 self.matcher.learn(char, binary, confidence=1.0)
                 self.matcher.learn(char, binary, confidence=1.0)
 

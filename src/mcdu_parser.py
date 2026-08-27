@@ -226,38 +226,42 @@ def _disambiguate_confusables(cell_binary: np.ndarray, char: str) -> str:
         # two are told apart by context, not by shape.
 
     # ------------------------------------------------------------------
-    #  A vs B
+    #  A vs B vs 8
     # ------------------------------------------------------------------
-    if char in ('A', 'B'):
-        top_quarter = glyph[: h // 4, :]
-        bot_quarter = glyph[3 * h // 4 :, :]
-        top_ink_cols = np.any(top_quarter > 0, axis=0)
-        bot_ink_cols = np.any(bot_quarter > 0, axis=0)
-        top_span = float(np.count_nonzero(top_ink_cols)) / max(w, 1)
-        bot_span = float(np.count_nonzero(bot_ink_cols)) / max(w, 1)
-
-        if top_span < bot_span * 0.78:
+    if char in ('A', 'B', '8'):
+        # How much of the glyph's width the top quarter covers.  An A comes
+        # to a point or a short flat, a B and an 8 are square across the
+        # top.  Measured over 105 labelled glyphs from the captures and the
+        # rendered pages, A reaches 0.67 at most and B and 8 start at 0.75,
+        # so this separates A from both with room to spare.
+        #
+        # The previous test compared the top against the *bottom* quarter.
+        # That ratio overlaps - some A are as wide at the top as at the
+        # bottom - and when it failed to name an A the glyph fell through
+        # to the B/8 test below, whose left edge is not continuous on an A
+        # either, so it came out as 8.  Which is how every A on the UNS-1
+        # and Avro pages read as B, and then as 8.
+        top_span = float(np.count_nonzero(
+            glyph[:max(1, h // 4)].any(axis=0))) / w
+        if top_span <= 0.72:
             return 'A'
-        elif char == 'A' and top_span > bot_span * 0.88:
-            return 'B'
+        if char == 'A':
+            char = 'B'      # square-topped; decide between B and 8 below
 
-    # ------------------------------------------------------------------
-    #  B vs 8
-    # ------------------------------------------------------------------
     if char in ('B', '8'):
-        # B has a solid vertical bar on the left (like D).
-        # 8 has curves on both sides — the left edge has gaps at the
-        # waist and near corners.
+        # A B has a straight stem down its left edge; an 8 curves away from
+        # it at the waist and the corners.  The two overlap in the middle
+        # of that range, so only the unmistakable cases are rewritten and
+        # anything else is left as it was read.
         left_cols = max(2, w // 5)
-        left_strip = glyph[:, :left_cols]
-        rows_with_ink = np.any(left_strip > 0, axis=1)
-        left_continuity = float(np.count_nonzero(rows_with_ink)) / h
-        left_fill = float(np.count_nonzero(left_strip)) / max(left_strip.size, 1)
-
-        if left_continuity > 0.85 and left_fill > 0.45:
+        strip = glyph[:, :left_cols]
+        continuity = float(np.count_nonzero(np.any(strip > 0, axis=1))) / h
+        fill = float(np.count_nonzero(strip)) / max(strip.size, 1)
+        if continuity >= 0.95 and fill >= 0.90:
             return 'B'
-        elif char == 'B':
+        if continuity <= 0.80:
             return '8'
+        return char
 
     # ------------------------------------------------------------------
     #  I vs / (and 1)
@@ -1036,40 +1040,231 @@ class MCDUParser:
     # ------------------------------------------------------------------
     #  Cell preprocessing  (for template matching)
     # ------------------------------------------------------------------
-    def _preprocess_cell(self, cell: np.ndarray) -> np.ndarray:
+    def _cell_ink_level(self, cell: np.ndarray, inverted: bool) -> float:
+        """The brightness that separates ink from background in this cell.
+
+        Otsu, guarded: it degrades when a cell is near-empty, because the
+        low variance drives the split down until noise counts as ink.  Only
+        values between half the fixed threshold and 220 are accepted.
+        """
+        gray = np.max(cell, axis=2)
+        if inverted:
+            gray = 255 - gray
+        ink_threshold = self.INK_THRESHOLD + self._bg_floor
+        level, _ = cv2.threshold(gray, 0, 255,
+                                 cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        if level < ink_threshold * 0.5 or level > 220:
+            return float(ink_threshold)
+        return float(level)
+
+    def _binarise(self, pixels: np.ndarray, level: float,
+                  inverted: bool) -> np.ndarray:
+        """Threshold *pixels* at *level* and close one-pixel gaps."""
+        gray = np.max(pixels, axis=2)
+        if inverted:
+            gray = 255 - gray
+        _, binary = cv2.threshold(gray, level, 255, cv2.THRESH_BINARY)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+        return cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+
+    def _preprocess_cell(self, cell: np.ndarray,
+                         inverted: Optional[bool] = None,
+                         level: Optional[float] = None) -> np.ndarray:
         """Convert a colour cell to a clean binary image.
 
         A reverse-video cell is flipped first, so the glyph reads as ink and
         matches the same learned template as its normal-video twin.  Without
         that, every inverted character would be learned separately as a
         filled block with a hole in it.
+
+        Args:
+            cell: The pixels to threshold.
+            inverted: Whether these pixels are reverse video.  Decided from
+                *cell* when not given.
+            level: Ink/background split to use.  Chosen from *cell* when not
+                given.  A caller working on a window wider than one cell
+                must pass the cell's own level: Otsu reads the histogram it
+                is given, so re-deriving it over a wider window shifts the
+                split, and the same glyph then binarises differently
+                depending on how much of its neighbours came along - which
+                is exactly what a template match cannot tolerate.
         """
-        gray = np.max(cell, axis=2)
-        if self.is_inverted_cell(cell):
-            gray = 255 - gray
-        # Per-cell Otsu finds the optimal ink/background split.
-        # It degrades when the cell is near-empty (low variance → very low
-        # threshold that passes noise).  Guard: only accept Otsu values in
-        # the range [half the fixed threshold, 220].
-        ink_threshold = self.INK_THRESHOLD + self._bg_floor
-        otsu_val, binary = cv2.threshold(
-            gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-        )
-        if otsu_val < ink_threshold * 0.5 or otsu_val > 220:
-            _, binary = cv2.threshold(gray, ink_threshold, 255, cv2.THRESH_BINARY)
-        # Small morphological close to fill 1-px gaps in the font
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-        return binary
+        if inverted is None:
+            inverted = self.is_inverted_cell(cell)
+        if level is None:
+            level = self._cell_ink_level(cell, inverted)
+        return self._binarise(cell, level, inverted)
+
+    #: How far either side of a cell to look for the rest of its glyph, as
+    #: a fraction of the cell width.  Wide enough to recover a character
+    #: that sits off-centre, narrow enough that the neighbour's glyph is
+    #: usually a separate component even when it is reached.
+    GLYPH_MARGIN = 0.35
+
+    #: Ink narrower than this fraction of a cell, with no component of its
+    #: own, is a neighbour's tail rather than a character.
+    SLIVER_WIDTH = 0.25
+
+    #: A component wider than this many cells is not one character, it is
+    #: two that touch.  Those are cut at the cell edge as before, because
+    #: giving the whole thing to one cell would empty the other.
+    MERGED_GLYPH_WIDTH = 1.3
 
     def cell_binary(self, row: int, col: int) -> np.ndarray:
-        """The preprocessed binary for one cell, computed once per frame."""
+        """The glyph in one cell, as recognition should see it.
+
+        Not simply the cell: the cell is a lattice square, and a character
+        does not always sit inside one.  Measured over the real captures,
+        the fraction of glyphs whose body crosses a column edge runs from
+        0% on the ATR and the Fokker - which really are fixed-pitch - to
+        8% on the A330 and 40% on the Avro GNLU and the Just Flight UNS-1.
+        Those last two are not fixed-pitch at all: their glyph positions
+        scatter around the lattice by a sixth of a cell, and the scatter is
+        not drift, so no pitch or origin can remove it.
+
+        Cutting at the lattice hands the matcher two half-characters and it
+        can name neither.  So the window is widened either side, and the
+        ink components that belong to this cell - the ones lying nearer its
+        centre than any neighbour's - are kept whole.  A component too wide
+        to be one character is two that touch, and is cut at the cell edge
+        as before.
+
+        Everything else still works on the lattice cell: whether it is
+        empty, what colour it is, whether it is reverse video.  Those are
+        properties of the cell, and a glyph-tight crop would read as
+        reverse video on its own.
+        """
         key = (row, col)
         binary = self._bin_cache.get(key)
         if binary is None:
-            binary = self._preprocess_cell(self.extract_cell(row, col))
+            binary = self._extract_glyph_binary(row, col)
             self._bin_cache[key] = binary
         return binary
+
+    def _split_touching(self, window: np.ndarray, component: np.ndarray,
+                        left: int, right: int) -> Optional[np.ndarray]:
+        """Cut a run of touching glyphs at its thinnest points.
+
+        Args:
+            window: The binarised window, for shape only.
+            component: Boolean mask of the merged component.
+            left: This cell's left edge, in window coordinates.
+            right: This cell's right edge, in window coordinates.
+
+        Returns:
+            A boolean mask of the part of *component* belonging to this
+            cell, or None when no sensible cut exists.
+        """
+        ink = component.sum(axis=0)
+        reach = max(1, int(round(self.cell_width * 0.25)))
+
+        def thinnest(edge: int) -> int:
+            lo, hi = max(0, edge - reach), min(len(ink), edge + reach + 1)
+            if hi - lo < 2:
+                return edge
+            return lo + int(np.argmin(ink[lo:hi]))
+
+        start = thinnest(left) if left > 0 else 0
+        stop = thinnest(right) if right < window.shape[1] else window.shape[1]
+        if stop - start < 2:
+            return None
+        piece = np.zeros_like(component)
+        piece[:, start:stop] = component[:, start:stop]
+        return piece if piece.any() else None
+
+    def _extract_glyph_binary(self, row: int, col: int) -> np.ndarray:
+        """Preprocess the cell, then reclaim any of its glyph that spilled."""
+        cell = self.extract_cell(row, col)
+        inverted = self.is_inverted_cell(cell)
+        level = self._cell_ink_level(cell, inverted)
+        binary = self._binarise(cell, level, inverted)
+        if binary.size == 0 or not binary.any():
+            return binary
+
+        pad = int(round(self.cell_width * self.GLYPH_MARGIN))
+        if pad < 1:
+            return binary
+
+        left, right = self._col_edges[col], self._col_edges[col + 1]
+        top, bottom = self._row_edges[row], self._row_edges[row + 1]
+        start = max(0, left - pad)
+        stop = min(self.image.shape[1], right + pad)
+        if stop - start <= right - left:
+            return binary                    # nothing to widen into
+
+        # The cell's own ink level, applied to the wider window, so a glyph
+        # binarises the same whether or not it needed reclaiming.
+        window = self._binarise(
+            self.image[top:bottom, start:stop], level, inverted)
+        count, labels, stats, centroids = cv2.connectedComponentsWithStats(
+            window, 8)
+        if count <= 1:
+            return binary
+
+        # A component belongs to this cell when its centre is nearer this
+        # cell's centre than the neighbouring cells'.
+        cell_centre = (left + right) / 2.0 - start
+        keep = np.zeros(window.shape, dtype=np.uint8)
+        kept = False
+        saw_component = False
+        for i in range(1, count):
+            x = stats[i, cv2.CC_STAT_LEFT]
+            width = stats[i, cv2.CC_STAT_WIDTH]
+            if x + width <= left - start or x >= right - start:
+                continue                     # no overlap with the cell at all
+            saw_component = True
+            if width > self.cell_width * self.MERGED_GLYPH_WIDTH:
+                # Touching neighbours.  Cut them apart where the ink is
+                # thinnest rather than at the lattice edge, which is where
+                # a reader would cut and is rarely the same column - the
+                # bridge between two glyphs is a pixel or two wide and sits
+                # wherever their side bearings happen to meet.
+                piece = self._split_touching(
+                    window, labels == i, left - start, right - start)
+                if piece is None:
+                    return binary
+                keep[piece] = 255
+                kept = True
+                continue
+            if abs(centroids[i][0] - cell_centre) > self.cell_width / 2.0:
+                continue                     # nearer a neighbour's centre
+            keep[labels == i] = 255
+            kept = True
+        if not kept:
+            # Every component here lies nearer a neighbour's centre than
+            # this cell's.  If what landed inside the cell is only a sliver,
+            # it is the tail of the character next door and this cell holds
+            # nothing - reporting it as ink invites a character to be
+            # invented for a few pixels.  Anything bigger is kept: the
+            # ownership test is a guide, not an oracle, and losing a real
+            # character costs more than an occasional stray one.
+            inside = binary.any(axis=0)
+            span = int(np.count_nonzero(inside))
+            if span <= max(1, int(self.cell_width * self.SLIVER_WIDTH)):
+                return np.zeros_like(binary)
+            return binary
+        # Returned uncropped.  _extract_glyph pads the bounding box by a
+        # pixel so that glyphs sitting slightly differently in their cells
+        # still normalise to the same shape, and it can only do that if
+        # there is room around the ink.  Cropping tight here took that
+        # room away on one axis, which changed the glyph's aspect and
+        # stopped it matching the template it had been learned from.
+        return keep
+
+    def is_blank(self, row: int, col: int) -> bool:
+        """True when this cell holds no character of its own.
+
+        Stricter than :meth:`is_empty_cell`, which only asks whether there
+        are lit pixels.  A cell can be lit by its neighbour: on the UNS-1
+        pages a glyph routinely reaches five or ten per cent into the next
+        cell, and calling that cell occupied invites a character to be
+        invented for a sliver.  Here the ink has to belong to the cell -
+        see :meth:`cell_binary`.
+        """
+        cell = self.extract_cell(row, col)
+        if cell.size == 0 or self.is_empty_cell(cell):
+            return True
+        return not self.cell_binary(row, col).any()
 
     def _is_entry_box(self, cell: np.ndarray) -> bool:
         """True when this cell holds an entry box rather than a character."""
@@ -1702,8 +1897,7 @@ class MCDUParser:
         # ── Phase 1: identify empty cells ───────────────────────
         row_empty: List[List[bool]] = []
         for row in range(self.rows):
-            flags = [self.is_empty_cell(self.extract_cell(row, col))
-                     for col in range(self.columns)]
+            flags = [self.is_blank(row, col) for col in range(self.columns)]
             row_empty.append(flags)
 
         # Rows that contain at least one non-empty cell
@@ -1852,10 +2046,21 @@ class MCDUParser:
                         # Settled by geometry, or contradicted by it.
                         if (row, col) in structural or vetoable(ch):
                             continue
+                        # Break the confusable pairs *before* voting.  This
+                        # is the same rule Phase 5 applies to an OCR
+                        # proposal on its way to the display, and warmup was
+                        # the one place it did not run - so a reading the
+                        # display would have corrected was learned
+                        # uncorrected, and every later frame then matched
+                        # the wrong template and was immune to the fix.  On
+                        # the UNS-1 and Avro pages that turned every A into
+                        # a B and every D into an O: INITIBL, NBV, DBTBBBSE,
+                        # BIRCRBFT, NAV OATB.
+                        glyph = self.cell_binary(row, col)
+                        ch = _disambiguate_confusables(glyph, ch)
                         votes = cell_all_votes.setdefault((row, col), {})
                         votes[ch] = votes.get(ch, 0) + 1
-                        matcher.learn(ch, self.cell_binary(row, col),
-                                      confidence=0.8)
+                        matcher.learn(ch, glyph, confidence=0.8)
 
                 def _read_page(scale: int, thicken: bool = False) -> None:
                     reading = self._ocr_full_image_easyocr(scale, thicken)

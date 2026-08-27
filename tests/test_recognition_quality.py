@@ -74,7 +74,7 @@ class TestRecognitionAccuracy(unittest.TestCase):
                 for col, char in enumerate(line):
                     if char == " ":
                         continue
-                    binary = parser._preprocess_cell(parser.extract_cell(row, col))
+                    binary = parser.cell_binary(row, col)
                     self.matcher.learn(char, binary, confidence=1.0)
                     self.matcher.learn(char, binary, confidence=1.0)
 
