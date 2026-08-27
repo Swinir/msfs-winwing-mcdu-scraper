@@ -1,3 +1,9 @@
 # Development dependencies for building executables and testing
 pyinstaller>=6.0.0
 pytest>=7.0.0
+
+# The test fixtures render MCDU pages and load the captures in
+# tests/data with it.  The app itself no longer does: capture and
+# preview both work in numpy arrays and QPixmap.  (EasyOCR pulls
+# Pillow in on its own, so installing it changes nothing there.)
+Pillow>=10.0.0

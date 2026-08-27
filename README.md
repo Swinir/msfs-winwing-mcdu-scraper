@@ -229,11 +229,14 @@ msfs-winwing-mcdu-scraper/
 │   ├── pipeline.py             # Shared capture/parse/stabilise/send loop
 │   ├── config.py               # Configuration
 │   ├── window_capture.py       # Window capture (GDI, WGC, mss)
-│   ├── mcdu_parser.py          # Templates, OCR, character extraction
+│   ├── mcdu_parser.py          # Geometry, templates, OCR, extraction
+│   ├── mcdu_charset.py         # What the CDU font can draw
+│   ├── mcdu_labels.py          # Known fixed labels on Airbus pages
 │   ├── mcdu_detector.py        # Automatic MCDU region detection
+│   ├── aircraft_profiles.py    # Grid, font and store per FMS family
 │   ├── region_selector.py      # Interactive region selection dialog
-│   ├── mobiflight_client.py    # WebSocket communication
-│   └── screen_capture.py       # Legacy fixed-region screen capture
+│   ├── region_geometry.py      # Selection maths, testable headless
+│   └── mobiflight_client.py    # WebSocket communication
 ├── tests/                      # Unit tests
 ├── templates/                  # Learned glyph templates (runtime)
 ├── requirements.txt            # Python dependencies

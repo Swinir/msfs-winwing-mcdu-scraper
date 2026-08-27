@@ -746,6 +746,85 @@ version was rejected.
 
 ---
 
+## #27 — Whole-codebase review: five defects and the code behind them
+
+**Type:** bug · **Severity:** medium · **Status:** FIXED
+
+A pass over every module, looking for what was wrong rather than what was
+untidy.  Five things could bite a user:
+
+**Stop did nothing until MobiFlight answered.**  `ScraperWorker.stop()` told
+each pipeline to stop, but until the connection is up there are no
+pipelines - only a coroutine waiting on `client.connected`, and the client
+retries for as long as it takes because MobiFlight is usually not running
+yet.  Pressing Stop in that window left the worker waiting forever, and
+since the window only leaves its running state when the worker finishes,
+both buttons stayed disabled and the app had to be killed.  It now waits on
+the connection or on a stop event, whichever comes first.
+`tests/test_worker_lifecycle.py` covers it.
+
+**A failed send counted as a success.**  The pipeline only sends a grid when
+it differs from the last one it sent, and `MobiFlightClient.send` reported
+failure only to the log.  So a send that failed - the socket dropping at the
+wrong moment - marked the grid as delivered, and the CDU kept showing the
+previous page until the aircraft happened to change something.  `send` now
+returns whether the message went out, and the pipeline only remembers a grid
+once it has.
+
+**GDI capture leaked four handles per failed frame.**  `_capture_via_gdi`
+released its device contexts and bitmap on the success path only.  GDI
+objects are a per-process resource with a hard limit and this runs up to
+thirty times a second, so a repeating failure - a minimised window reporting
+a zero-sized rectangle is enough - would eventually leave the process unable
+to draw anything at all.  Now released in a `finally`, with an explicit
+error for the zero-sized case.
+
+**Frame logging copied the whole frame, always.**  `_log_frame_change` hashed
+`img.tobytes()[:4096]`, which serialises the entire image before discarding
+all but four kilobytes: about a megabyte of copying per frame, thirty times
+a second, to produce a debug message nobody was listening to.  It now
+returns immediately unless debug logging is on, and hashes a few rows.
+
+**The launcher disabled the CDU.**  `run_gui.bat` set
+`MSFS_SCRAPER_NO_MOBIFLIGHT=1`, the switch that swaps the WebSocket client
+for one that throws display data away.  QUICKSTART.md tells users to
+double-click that script, so anyone following it got a scraper that read
+the display perfectly and sent it nowhere - indistinguishable from broken
+hardware.  Removed from the launcher, and the switch is now documented in
+CONTRIBUTING.md where it belongs, along with why it must stay out of there.
+
+Two more that were latent rather than active:
+
+- The known-label dictionary was gated on the small-font convention, which
+  every airliner CDU in the profile list shares.  The ATR's INIT page title
+  contains the word INIT, so it matched the Airbus INIT layout and was saved
+  only by the per-label agreement check.  Profiles now say which label set
+  applies to them, and only the Airbus profile claims one.
+- `config.yaml` was read in the platform's default encoding.
+
+### Code removed
+
+- `src/screen_capture.py` — superseded by `window_capture`, imported by
+  nothing, and its docstring promised RGB while returning BGR.
+- The detector's two bounding-box strategies, 319 lines.  They never ran:
+  across eight real captures and every rendered page, with and without
+  window chrome, the pitch detector answered every time.  Nor would their
+  answer have helped - a box that surrounds the text without landing on the
+  cells is exactly the failure #12 was about, and it looks plausible enough
+  in the preview to invite pressing Start.  Returning None sends the caller
+  to the manual selector, which the dialog already handles.  As a bonus the
+  detector no longer has a `_detect_via_contours` of its own, which had
+  nothing to do with the parser function of the same name.
+- `list_msfs_windows`, which duplicated the GUI's own window filtering with
+  a shorter keyword list; `WindowCapture.set_crop_region` and
+  `capture_to_pil`; and unused imports across five modules.
+
+`WindowCapture.is_window_valid` was dead too, and is now used: ten black
+frames with no window behind them reports that the pop-out has been closed,
+rather than cycling through all three backends and blaming the last one.
+
+---
+
 ## #9 — Migrate the GUI from Tkinter to PySide6
 
 **Type:** feature · **Severity:** n/a · **Status:** FIXED
