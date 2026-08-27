@@ -13,24 +13,10 @@ Capture priority:
 import logging
 import numpy as np
 import threading
-from PIL import Image
 from typing import List, Tuple, Optional
 import sys
 import ctypes
 import ctypes.wintypes
-
-# ---------- DPI awareness (must run before any GUI / coordinate calls) --------
-# Without this, GetWindowRect returns DPI-scaled (logical) coords on Win10/11,
-# while mss captures in physical pixels.  The mismatch grows as the window moves
-# away from (0, 0), causing a blank / wrong capture region.
-if sys.platform == 'win32':
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)   # Per-Monitor V2
-    except Exception:
-        try:
-            ctypes.windll.user32.SetProcessDPIAware()     # fallback
-        except Exception:
-            pass
 
 try:
     import mss
@@ -60,7 +46,6 @@ if sys.platform == 'win32':
         import win32gui
         import win32ui
         import win32con
-        import win32api
         WINDOWS_AVAILABLE = True
     except ImportError:
         logger.warning("pywin32 not available. Window capture will not work. Install with: pip install pywin32")
@@ -92,12 +77,12 @@ class WindowCapture:
 
     #: Black frames tolerated before trying the next backend.
     BLACK_FRAMES_BEFORE_REPROBE = 10
-    
-    def __init__(self, window_title: Optional[str] = None, window_handle: Optional[int] = None, 
+
+    def __init__(self, window_title: Optional[str] = None, window_handle: Optional[int] = None,
                  crop_region: Optional[Tuple[int, int, int, int]] = None):
         """
         Initialize window capture
-        
+
         Args:
             window_title: Title of the window to capture (will search for partial match)
             window_handle: Direct window handle (HWND) if known
@@ -108,7 +93,7 @@ class WindowCapture:
                 "Window capture is only supported on Windows with pywin32 installed. "
                 "Install with: pip install pywin32"
             )
-        
+
         self.window_title = window_title
         self.hwnd = window_handle
         self.crop_region = crop_region
@@ -129,16 +114,16 @@ class WindowCapture:
         self._wgc_lock = threading.Lock()
         self._wgc_ready = threading.Event()
         self._wgc_closed = False
-        
+
         if not self.hwnd and window_title:
             self.hwnd = self._find_window_by_title(window_title)
-        
+
         if not self.hwnd:
             raise ValueError(
                 f"Could not find window with title containing: '{window_title}'. "
                 f"Use list_windows() to see available windows."
             )
-        
+
         # Get actual window title
         self.actual_title = win32gui.GetWindowText(self.hwnd)
         logger.info(f"Window capture initialized for: {self.actual_title} (HWND: {self.hwnd})")
@@ -146,15 +131,15 @@ class WindowCapture:
             logger.info(f"Crop region set: x={self.crop_region[0]}, y={self.crop_region[1]}, "
                        f"w={self.crop_region[2]}, h={self.crop_region[3]}")
 
-    
+
     @staticmethod
     def _find_window_by_title(title: str) -> Optional[int]:
         """
         Find window handle by title (partial match, case-insensitive)
-        
+
         Args:
             title: Window title to search for
-            
+
         Returns:
             Window handle (HWND) or None if not found
         """
@@ -163,36 +148,36 @@ class WindowCapture:
                 window_text = win32gui.GetWindowText(hwnd)
                 if title.lower() in window_text.lower() and window_text:
                     windows.append((hwnd, window_text))
-        
+
         windows = []
         win32gui.EnumWindows(callback, windows)
-        
+
         if windows:
             # Return the first match
             return windows[0][0]
         return None
-    
+
     @staticmethod
     def list_windows() -> List[Tuple[int, str]]:
         """
         List all visible windows
-        
+
         Returns:
             List of tuples (hwnd, title)
         """
         if not WINDOWS_AVAILABLE:
             return []
-        
+
         def callback(hwnd, windows):
             if win32gui.IsWindowVisible(hwnd):
                 window_text = win32gui.GetWindowText(hwnd)
                 if window_text:  # Only include windows with titles
                     windows.append((hwnd, window_text))
-        
+
         windows = []
         win32gui.EnumWindows(callback, windows)
         return sorted(windows, key=lambda x: x[1])
-    
+
     @staticmethod
     def _is_mostly_black(img: np.ndarray, max_threshold: int = 100,
                          avg_threshold: float = 3.0) -> bool:
@@ -446,6 +431,17 @@ class WindowCapture:
             # ---- Re-probe: if frames keep coming back black, try next ----
             if self._is_mostly_black(img):
                 self._consecutive_black += 1
+                if (self._consecutive_black
+                        == self.BLACK_FRAMES_BEFORE_REPROBE
+                        and not self.is_window_valid()):
+                    # No backend can capture a window that no longer
+                    # exists, so say so instead of cycling through all
+                    # three and blaming the last one.
+                    logger.error(
+                        "The window '%s' has been closed. Stop the scraper, "
+                        "re-open the pop-out and pick it again.",
+                        self.actual_title,
+                    )
                 # Retry periodically rather than only on the tenth frame: if
                 # the one attempt at switching also came back black, an
                 # equality test would never fire again and the capture stayed
@@ -509,46 +505,87 @@ class WindowCapture:
     # ------------------------------------------------------------------
 
     def _capture_via_gdi(self, width: int, height: int) -> np.ndarray:
-        """Capture via PrintWindow / BitBlt (GDI). Returns RGB ndarray."""
-        hwndDC = win32gui.GetWindowDC(self.hwnd)
-        mfcDC = win32ui.CreateDCFromHandle(hwndDC)
-        saveDC = mfcDC.CreateCompatibleDC()
+        """Capture via PrintWindow / BitBlt (GDI). Returns RGB ndarray.
 
-        saveBitMap = win32ui.CreateBitmap()
-        saveBitMap.CreateCompatibleBitmap(mfcDC, width, height)
-        saveDC.SelectObject(saveBitMap)
+        Every handle is released in a finally block.  GDI objects are a
+        per-process resource with a hard limit, and this runs up to 30 times
+        a second: a capture that threw part-way through - a minimised window
+        reporting a zero-sized rectangle is enough - used to leak four of
+        them per frame, and the process would eventually be unable to draw
+        anything at all.
+        """
+        if width <= 0 or height <= 0:
+            raise ValueError(
+                f"window reports a {width}x{height} rectangle; "
+                f"it is probably minimised"
+            )
 
-        # Try PrintWindow first (better for minimized/offscreen windows)
-        pw_flags = getattr(win32con, 'PW_RENDERFULLCONTENT', 2)
+        hwndDC = mfcDC = saveDC = saveBitMap = None
         try:
-            res = win32gui.PrintWindow(self.hwnd, saveDC.GetSafeHdc(), pw_flags)
-        except Exception:
-            res = 0
+            hwndDC = win32gui.GetWindowDC(self.hwnd)
+            mfcDC = win32ui.CreateDCFromHandle(hwndDC)
+            saveDC = mfcDC.CreateCompatibleDC()
 
-        if not res:
-            saveDC.BitBlt((0, 0), (width, height), mfcDC, (0, 0), win32con.SRCCOPY)
+            saveBitMap = win32ui.CreateBitmap()
+            saveBitMap.CreateCompatibleBitmap(mfcDC, width, height)
+            saveDC.SelectObject(saveBitMap)
 
-        bmpstr = saveBitMap.GetBitmapBits(True)
-        img = np.frombuffer(bmpstr, dtype=np.uint8).copy()  # .copy() owns the data
-        img = img.reshape((height, width, 4))  # BGRA
-        img = img[:, :, [2, 1, 0]]  # BGR → RGB (drop alpha)
+            # PrintWindow first: it works on an occluded window, BitBlt
+            # copies whatever is on screen in front of it.
+            pw_flags = getattr(win32con, 'PW_RENDERFULLCONTENT', 2)
+            try:
+                res = win32gui.PrintWindow(self.hwnd, saveDC.GetSafeHdc(),
+                                           pw_flags)
+            except Exception:
+                res = 0
 
-        # Cleanup GDI resources
-        saveDC.DeleteDC()
-        mfcDC.DeleteDC()
-        win32gui.ReleaseDC(self.hwnd, hwndDC)
-        win32gui.DeleteObject(saveBitMap.GetHandle())
+            if not res:
+                saveDC.BitBlt((0, 0), (width, height), mfcDC, (0, 0),
+                              win32con.SRCCOPY)
 
-        return img
+            bmpstr = saveBitMap.GetBitmapBits(True)
+            img = np.frombuffer(bmpstr, dtype=np.uint8).copy()  # own the data
+            img = img.reshape((height, width, 4))               # BGRA
+            return img[:, :, [2, 1, 0]]                         # BGR -> RGB
+        finally:
+            if saveBitMap is not None:
+                try:
+                    win32gui.DeleteObject(saveBitMap.GetHandle())
+                except Exception:
+                    pass
+            if saveDC is not None:
+                try:
+                    saveDC.DeleteDC()
+                except Exception:
+                    pass
+            if mfcDC is not None:
+                try:
+                    mfcDC.DeleteDC()
+                except Exception:
+                    pass
+            if hwndDC is not None:
+                try:
+                    win32gui.ReleaseDC(self.hwnd, hwndDC)
+                except Exception:
+                    pass
 
     def _log_frame_change(self, img: np.ndarray):
-        """Log a debug message whenever the captured frame content changes."""
-        h = hash(img.tobytes()[:4096])  # hash a prefix for speed
-        if self._prev_hash is not None and h != self._prev_hash:
-            logger.debug(f"Frame #{self._frame_count}: content CHANGED")
-        elif self._prev_hash is not None and h == self._prev_hash:
-            if self._frame_count % 30 == 0:
-                logger.debug(f"Frame #{self._frame_count}: content unchanged")
+        """Log a debug message whenever the captured frame content changes.
+
+        Costs nothing unless debug logging is on.  It used to hash
+        ``img.tobytes()[:4096]``, which serialises the *whole* frame before
+        throwing all but four kilobytes of it away - about a megabyte of
+        copying per frame, thirty times a second, to produce a message
+        nobody was listening to.
+        """
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        h = hash(img[:4].tobytes())     # a few rows is enough to spot a change
+        if self._prev_hash is not None:
+            if h != self._prev_hash:
+                logger.debug("Frame #%d: content CHANGED", self._frame_count)
+            elif self._frame_count % 30 == 0:
+                logger.debug("Frame #%d: content unchanged", self._frame_count)
         self._prev_hash = h
 
     def _apply_crop(self, img: np.ndarray, window_width: int, window_height: int) -> np.ndarray:
@@ -578,42 +615,18 @@ class WindowCapture:
                 )
 
         return img[y:y+h, x:x+w]
-    
-    def capture_to_pil(self) -> Image.Image:
-        """
-        Capture window and return as PIL Image
-        
-        Returns:
-            PIL.Image: RGB image
-        """
-        img_array = self.capture()
-        return Image.fromarray(img_array)
-    
+
     def is_window_valid(self) -> bool:
         """
         Check if window still exists
-        
+
         Returns:
             bool: True if window is valid
         """
         if not WINDOWS_AVAILABLE:
             return False
         return win32gui.IsWindow(self.hwnd)
-    
-    def set_crop_region(self, crop_region: Optional[Tuple[int, int, int, int]]):
-        """
-        Set or update the crop region
-        
-        Args:
-            crop_region: Crop region (x, y, width, height) or None to disable cropping
-        """
-        self.crop_region = crop_region
-        if crop_region:
-            logger.info(f"Crop region updated: x={crop_region[0]}, y={crop_region[1]}, "
-                       f"w={crop_region[2]}, h={crop_region[3]}")
-        else:
-            logger.info("Crop region cleared")
-    
+
     def close(self):
         """Close window capture session and release resources."""
         # Stop WGC session
@@ -625,21 +638,3 @@ class WindowCapture:
                 pass
             self._mss_instance = None
         logger.info(f"Window capture session closed for: {self.actual_title}")
-
-
-def list_msfs_windows() -> List[Tuple[int, str]]:
-    """
-    List windows that might be MSFS-related (convenience function)
-    
-    Returns:
-        List of tuples (hwnd, title)
-    """
-    all_windows = WindowCapture.list_windows()
-    msfs_keywords = ['microsoft flight simulator', 'msfs', 'flight simulator', 'mcdu']
-    
-    msfs_windows = [
-        (hwnd, title) for hwnd, title in all_windows
-        if any(keyword in title.lower() for keyword in msfs_keywords)
-    ]
-    
-    return msfs_windows

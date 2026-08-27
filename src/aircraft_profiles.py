@@ -53,6 +53,12 @@ class AircraftProfile:
     #: Font the WinWing hardware loads for this family.
     font: str
     small_font_rule: str = "labels_small"
+    #: Which set of known fixed page labels applies, if any.  Every
+    #: airliner CDU here shares the labels_small convention, so that
+    #: is no guide at all: the ATR's INIT page and the Airbus's INIT
+    #: page match each other's title and share none of their labels.
+    #: Empty means the display's own text is the only authority.
+    page_labels: str = ""
     #: Basename of this family's learned-glyph store under templates/.
     template_filename: str = ""
     notes: str = ""
@@ -73,6 +79,7 @@ PROFILES: Dict[str, AircraftProfile] = {
             columns=24,
             rows=14,
             font="AirbusThales",
+            page_labels="airbus",
             # Legacy filename so templates learned before profiles existed
             # keep working — they were all Airbus.
             template_filename="mcdu_templates.npz",

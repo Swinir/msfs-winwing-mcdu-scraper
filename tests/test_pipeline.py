@@ -33,13 +33,20 @@ class FakeCapture:
 
 
 class FakeClient:
-    """Records every payload handed to the CDU."""
+    """Records every payload handed to the CDU.
 
-    def __init__(self):
+    Returns True, like the real client, to say the grid went out.  A client
+    that reports failure keeps the pipeline from marking the grid as sent,
+    so it will be offered again next frame.
+    """
+
+    def __init__(self, delivers=True):
         self.sent = []
+        self.delivers = delivers
 
     async def send_display_data(self, display_data):
         self.sent.append(list(display_data))
+        return self.delivers
 
 
 class TestDisplayStabiliser(unittest.TestCase):
@@ -179,6 +186,26 @@ class TestMCDUPipeline(unittest.TestCase):
         asyncio.run(pipe.tick())
         self.assertEqual(len(client.sent), 2)
         self.assertEqual(client.sent[1][0], cell("A"))
+
+    def test_a_grid_that_failed_to_send_is_offered_again(self):
+        """The CDU only changes when we send it something.
+
+        The pipeline sends a grid only when it differs from the last one it
+        sent, so if a failed send counted as a success the display would
+        keep the stale page until the aircraft happened to change it.
+        """
+        filled = [cell("A")] + [[] for _ in range(24 * 14 - 1)]
+        pipe, client = self._pipeline([self.frame] * 3,
+                                      parsed=[filled, filled, filled])
+        client.delivers = False
+        asyncio.run(pipe.tick())
+        asyncio.run(pipe.tick())
+        self.assertEqual(len(client.sent), 2,
+                         "gave up on a grid that never reached the hardware")
+
+        client.delivers = True
+        asyncio.run(pipe.tick())
+        self.assertEqual(len(client.sent), 3)
 
     def test_frame_count_tracks_captures(self):
         pipe, _ = self._pipeline([self.frame] * 3)

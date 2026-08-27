@@ -97,6 +97,24 @@ Feature requests are welcome! Please:
 - Explain expected behavior
 - Consider implementation approach
 
+## Running without the hardware
+
+Setting `MSFS_SCRAPER_NO_MOBIFLIGHT=1` starts the GUI with the WebSocket
+client replaced by one that accepts display data and throws it away.  The
+capture, the parser and the log all behave normally, so it is the quickest
+way to check recognition against a real pop-out with no WinWing CDU plugged
+in — and the log pane says `Test mode: MobiFlight disabled` so it cannot be
+mistaken for the real thing.
+
+```
+set MSFS_SCRAPER_NO_MOBIFLIGHT=1 && python src/gui.py
+```
+
+Keep it out of `run_gui.bat`.  That is the launcher QUICKSTART.md tells
+users to double-click, and with the variable set there the scraper reads the
+display perfectly and sends it nowhere, which looks exactly like broken
+hardware.
+
 ## Code of Conduct
 
 - Be respectful and constructive
