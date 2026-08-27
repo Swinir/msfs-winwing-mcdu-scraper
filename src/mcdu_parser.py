@@ -871,13 +871,17 @@ class MCDUParser:
     def __init__(self, image: np.ndarray,
                  columns: int = 24, rows: int = 14,
                  source_id: str = "default",
-                 small_font_rule: str = "labels_small") -> None:
+                 small_font_rule: str = "labels_small",
+                 page_labels: str = "") -> None:
         self.columns = columns
         self.rows = rows
         # How rows map to the hardware's large/small font:
         # "labels_small" (Airbus/Boeing: odd label rows small, last row
         # large) or "all_large" (UNS-1 style CRTs).
         self.small_font_rule = small_font_rule
+        # Which family's known page labels may correct this display,
+        # if any.  See aircraft_profiles.AircraftProfile.page_labels.
+        self.page_labels = page_labels
         # Namespaces the row-level OCR caches.  Every capture source
         # (captain, co-pilot, ...) must pass a distinct id, otherwise they
         # share cache entries and serve each other stale rows.
@@ -1810,7 +1814,7 @@ class MCDUParser:
             if _is_warmup and len(unmatched_rows) >= 4:
                 # Force EasyOCR initialisation and downloads BEFORE starting the warmup
                 _get_easyocr_reader()
-                
+
                 # ── One OCR pass per genuinely different view ──────
                 #
                 # This used to run five rounds of the same calls.  They are
@@ -2075,7 +2079,7 @@ class MCDUParser:
 
         # Fix known fixed labels using the page-type dictionary.
         apply_label_corrections(
-            message_data, self.columns, self.rows, self.small_font_rule,
+            message_data, self.columns, self.rows, self.page_labels,
         )
 
         # Persist templates periodically

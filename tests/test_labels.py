@@ -100,7 +100,7 @@ class TestLabelCorrection(unittest.TestCase):
             
         grid = self._make_grid(rows)
         
-        total_fixes = apply_label_corrections(grid, 24, 14, "labels_small")
+        total_fixes = apply_label_corrections(grid, 24, 14, "airbus")
         
         self.assertEqual(total_fixes, 3) # C0->CO, T0->TO, C0->CO
         
@@ -109,11 +109,23 @@ class TestLabelCorrection(unittest.TestCase):
         self.assertEqual(grid[1 * 24 + 22][0], "O") # FROM/TO
         self.assertEqual(grid[3 * 24 + 6][0], "O") # ALTN/CO RTE
 
-    def test_wrong_font_rule_skipped(self):
-        grid = self._make_grid(["INIT".ljust(24)] + [" "*24]*13)
-        # Should return immediately and not try to match
-        fixes = apply_label_corrections(grid, 24, 14, "all_large")
-        self.assertEqual(fixes, 0)
+    def test_another_aircraft_is_left_alone(self):
+        """The dictionary is Airbus pages; nothing else may be stamped with it.
+
+        This is not hypothetical.  The ATR's INIT page title contains the
+        word INIT, so it matches the Airbus INIT layout, and the two share
+        none of their labels.  The gate used to be the small-font
+        convention, which every airliner CDU in the profile list follows.
+        """
+        rows = [" C0 RTE         FROM/T0 " if i == 1 else " " * 24
+                for i in range(14)]
+        rows[0] = "  INIT                  "
+        for profile_labels in ("", "atr", "uns1"):
+            grid = self._make_grid(list(rows))
+            fixes = apply_label_corrections(grid, 24, 14, profile_labels)
+            self.assertEqual(fixes, 0, f"{profile_labels!r} was corrected")
+            self.assertEqual(grid[1 * 24 + 2][0], "0",
+                             "the grid was modified anyway")
 
 if __name__ == "__main__":
     unittest.main()

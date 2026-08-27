@@ -138,61 +138,22 @@ _AIRBUS_PAGES: List[PageLayout] = [
             9:  [Label(0, "FINAL")],
         },
     ),
-    # ── IDENT (A31x / A32x / A33x / A34x / A38x) ──
-    PageLayout(
-        title="A31",
-        labels={
-            1:  [Label(1, "ENG")],
-            3:  [Label(1, "ACTIVE NAV DATA BASE")],
-            5:  [Label(1, "SECOND NAV DATA BASE")],
-            9:  [Label(0, "CHG CODE")],
-            11: [Label(0, "IDLE/PERF"), Label(15, "SOFTWARE")],
-            13: [Label(0, "NAV ACCUR"), Label(10, "DOWNGRADED")],
-        },
-    ),
-    PageLayout(
-        title="A32",
-        labels={
-            1:  [Label(1, "ENG")],
-            3:  [Label(1, "ACTIVE NAV DATA BASE")],
-            5:  [Label(1, "SECOND NAV DATA BASE")],
-            9:  [Label(0, "CHG CODE")],
-            11: [Label(0, "IDLE/PERF"), Label(15, "SOFTWARE")],
-            13: [Label(0, "NAV ACCUR"), Label(10, "DOWNGRADED")],
-        },
-    ),
-    PageLayout(
-        title="A33",
-        labels={
-            1:  [Label(1, "ENG")],
-            3:  [Label(1, "ACTIVE NAV DATA BASE")],
-            5:  [Label(1, "SECOND NAV DATA BASE")],
-            9:  [Label(0, "CHG CODE")],
-            11: [Label(0, "IDLE/PERF"), Label(15, "SOFTWARE")],
-            13: [Label(0, "NAV ACCUR"), Label(10, "DOWNGRADED")],
-        },
-    ),
-    PageLayout(
-        title="A34",
-        labels={
-            1:  [Label(1, "ENG")],
-            3:  [Label(1, "ACTIVE NAV DATA BASE")],
-            5:  [Label(1, "SECOND NAV DATA BASE")],
-            9:  [Label(0, "CHG CODE")],
-            11: [Label(0, "IDLE/PERF"), Label(15, "SOFTWARE")],
-            13: [Label(0, "NAV ACCUR"), Label(10, "DOWNGRADED")],
-        },
-    ),
-    PageLayout(
-        title="A38",
-        labels={
-            1:  [Label(1, "ENG")],
-            3:  [Label(1, "ACTIVE NAV DATA BASE")],
-            5:  [Label(1, "SECOND NAV DATA BASE")],
-            9:  [Label(0, "CHG CODE")],
-            11: [Label(0, "IDLE/PERF"), Label(15, "SOFTWARE")],
-            13: [Label(0, "NAV ACCUR"), Label(10, "DOWNGRADED")],
-        },
+    # ── IDENT ──
+    #  One layout per airframe prefix, because the title row is how a page
+    #  is identified and the IDENT page's title is the aircraft type.
+    *(
+        PageLayout(
+            title=prefix,
+            labels={
+                1:  [Label(1, "ENG")],
+                3:  [Label(1, "ACTIVE NAV DATA BASE")],
+                5:  [Label(1, "SECOND NAV DATA BASE")],
+                9:  [Label(0, "CHG CODE")],
+                11: [Label(0, "IDLE/PERF"), Label(15, "SOFTWARE")],
+                13: [Label(0, "NAV ACCUR"), Label(10, "DOWNGRADED")],
+            },
+        )
+        for prefix in ("A31", "A32", "A33", "A34", "A38")
     ),
     # ── PROG ──
     PageLayout(
@@ -360,20 +321,25 @@ def _apply_label(message_data: list, columns: int,
 
 
 def apply_label_corrections(message_data: list, columns: int,
-                            rows: int,
-                            small_font_rule: str = "labels_small") -> int:
+                            rows: int, page_labels: str = "") -> int:
     """Post-correct known fixed labels in the parsed grid.
-
-    Only operates on Airbus style pages.
-    Returns the total number of characters corrected.
 
     Args:
         message_data: The parsed grid (modified in place).
         columns: Grid width.
         rows: Grid height.
-        small_font_rule: The profile's font-size convention.
+        page_labels: Which family's pages these are, from the
+            aircraft profile.  Anything but ``"airbus"`` leaves the
+            grid alone.  This used to key off the small-font
+            convention instead, which every airliner CDU here
+            shares - so an ATR INIT page matched the Airbus INIT
+            layout on its title and was saved only by the
+            per-label agreement check below.
+
+    Returns:
+        The number of characters corrected.
     """
-    if small_font_rule not in ("labels_small", "AirbusThales"):
+    if page_labels != "airbus":
         return 0
     if len(message_data) < columns * min(rows, 2):
         return 0

@@ -13,7 +13,6 @@ Capture priority:
 import logging
 import numpy as np
 import threading
-from PIL import Image
 from typing import List, Tuple, Optional
 import sys
 import ctypes
@@ -78,12 +77,12 @@ class WindowCapture:
 
     #: Black frames tolerated before trying the next backend.
     BLACK_FRAMES_BEFORE_REPROBE = 10
-    
-    def __init__(self, window_title: Optional[str] = None, window_handle: Optional[int] = None, 
+
+    def __init__(self, window_title: Optional[str] = None, window_handle: Optional[int] = None,
                  crop_region: Optional[Tuple[int, int, int, int]] = None):
         """
         Initialize window capture
-        
+
         Args:
             window_title: Title of the window to capture (will search for partial match)
             window_handle: Direct window handle (HWND) if known
@@ -94,7 +93,7 @@ class WindowCapture:
                 "Window capture is only supported on Windows with pywin32 installed. "
                 "Install with: pip install pywin32"
             )
-        
+
         self.window_title = window_title
         self.hwnd = window_handle
         self.crop_region = crop_region
@@ -115,16 +114,16 @@ class WindowCapture:
         self._wgc_lock = threading.Lock()
         self._wgc_ready = threading.Event()
         self._wgc_closed = False
-        
+
         if not self.hwnd and window_title:
             self.hwnd = self._find_window_by_title(window_title)
-        
+
         if not self.hwnd:
             raise ValueError(
                 f"Could not find window with title containing: '{window_title}'. "
                 f"Use list_windows() to see available windows."
             )
-        
+
         # Get actual window title
         self.actual_title = win32gui.GetWindowText(self.hwnd)
         logger.info(f"Window capture initialized for: {self.actual_title} (HWND: {self.hwnd})")
@@ -132,15 +131,15 @@ class WindowCapture:
             logger.info(f"Crop region set: x={self.crop_region[0]}, y={self.crop_region[1]}, "
                        f"w={self.crop_region[2]}, h={self.crop_region[3]}")
 
-    
+
     @staticmethod
     def _find_window_by_title(title: str) -> Optional[int]:
         """
         Find window handle by title (partial match, case-insensitive)
-        
+
         Args:
             title: Window title to search for
-            
+
         Returns:
             Window handle (HWND) or None if not found
         """
@@ -149,36 +148,36 @@ class WindowCapture:
                 window_text = win32gui.GetWindowText(hwnd)
                 if title.lower() in window_text.lower() and window_text:
                     windows.append((hwnd, window_text))
-        
+
         windows = []
         win32gui.EnumWindows(callback, windows)
-        
+
         if windows:
             # Return the first match
             return windows[0][0]
         return None
-    
+
     @staticmethod
     def list_windows() -> List[Tuple[int, str]]:
         """
         List all visible windows
-        
+
         Returns:
             List of tuples (hwnd, title)
         """
         if not WINDOWS_AVAILABLE:
             return []
-        
+
         def callback(hwnd, windows):
             if win32gui.IsWindowVisible(hwnd):
                 window_text = win32gui.GetWindowText(hwnd)
                 if window_text:  # Only include windows with titles
                     windows.append((hwnd, window_text))
-        
+
         windows = []
         win32gui.EnumWindows(callback, windows)
         return sorted(windows, key=lambda x: x[1])
-    
+
     @staticmethod
     def _is_mostly_black(img: np.ndarray, max_threshold: int = 100,
                          avg_threshold: float = 3.0) -> bool:
@@ -616,28 +615,18 @@ class WindowCapture:
                 )
 
         return img[y:y+h, x:x+w]
-    
-    def capture_to_pil(self) -> Image.Image:
-        """
-        Capture window and return as PIL Image
-        
-        Returns:
-            PIL.Image: RGB image
-        """
-        img_array = self.capture()
-        return Image.fromarray(img_array)
-    
+
     def is_window_valid(self) -> bool:
         """
         Check if window still exists
-        
+
         Returns:
             bool: True if window is valid
         """
         if not WINDOWS_AVAILABLE:
             return False
         return win32gui.IsWindow(self.hwnd)
-    
+
     def close(self):
         """Close window capture session and release resources."""
         # Stop WGC session
