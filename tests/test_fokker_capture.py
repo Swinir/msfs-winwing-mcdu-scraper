@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import mcdu_detector as detector
 import mcdu_parser
+import mcdu_templates
 from aircraft_profiles import PROFILES
 from mcdu_detector import detect_mcdu_region
 from mcdu_parser import MCDUParser, TemplateMatcher
@@ -176,14 +177,14 @@ class TestFokkerRecognition(unittest.TestCase):
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
-        self._saved = mcdu_parser._template_matcher
+        self._saved = mcdu_templates._template_matcher
         self._saved_imgs = dict(mcdu_parser._prev_row_imgs)
         self._saved_ocr = dict(mcdu_parser._prev_row_ocr)
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
         self.matcher = TemplateMatcher(
             template_path=Path(self._tmpdir.name) / "fokker.npz")
-        mcdu_parser._template_matcher = self.matcher
+        mcdu_templates._template_matcher = self.matcher
 
         self.crop = detected_crop()
         parser = MCDUParser(self.crop, columns=24, rows=14, source_id="teach")
@@ -194,12 +195,12 @@ class TestFokkerRecognition(unittest.TestCase):
                     continue
                 if parser.is_empty_cell(parser.extract_cell(row, col)):
                     continue
-                binary = parser._preprocess_cell(parser.extract_cell(row, col))
+                binary = parser.cell_binary(row, col)
                 self.matcher.learn(char, binary, confidence=1.0)
                 self.matcher.learn(char, binary, confidence=1.0)
 
     def tearDown(self):
-        mcdu_parser._template_matcher = self._saved
+        mcdu_templates._template_matcher = self._saved
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
         mcdu_parser._prev_row_imgs.update(self._saved_imgs)

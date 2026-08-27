@@ -94,6 +94,36 @@ def _ink_mask(image: np.ndarray) -> Optional[np.ndarray]:
     if not ink.any():
         return None
 
+    # A window border is a column of lit pixels running the whole height.
+    # This is the vertical twin of the rule filter in _text_rows, and it is
+    # needed for the same reason: a border that survives into the mask joins
+    # in the pitch and origin fit and drags the grid onto itself.  On the
+    # Avro capture a three-pixel bezel left only 38 pixels in the mask, and
+    # those were enough to put the grid's first column on the border instead
+    # of on the text - so every row came back with an invented character in
+    # column 0.
+    #
+    # Measured over the eight captures, a border column is lit down 98-100%
+    # of the image and the busiest column of text reaches 49%, so there is
+    # no need to be delicate about the threshold.  Four of the eight have
+    # one.
+    # Measured over the screen rows only.  Flattening the chrome rows above
+    # dims them to the background, so a border running the full height of
+    # the window stops looking solid if those rows are counted.
+    screen = ~chrome_rows if chrome_rows.any() else slice(None)
+    lit = gray[screen].astype(np.int16) > dominant + _INK_CONTRAST
+    border = lit.mean(axis=0) > _RULE_MIN_SOLIDITY
+    if border.any():
+        # One pixel either side as well: a hairline is usually flanked by an
+        # antialiased column that is not itself solid.  Shifted rather than
+        # rolled - a border on the left edge must not blank the right one.
+        widened = border.copy()
+        widened[1:] |= border[:-1]
+        widened[:-1] |= border[1:]
+        ink[:, widened] = False
+        if not ink.any():
+            return None
+
     # Whatever chrome the row rule could not catch (a floating dialog, a
     # side panel) still sits on an elevated background; drop that ink too.
     on_screen = ink & (background <= dominant + 40)

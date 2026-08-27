@@ -23,6 +23,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 sys.path.insert(0, str(Path(__file__).parent))
 
 import mcdu_detector as detector
+import mcdu_parser
+import mcdu_templates
 from aircraft_profiles import PROFILES
 from mcdu_parser import MCDUParser
 
@@ -251,6 +253,106 @@ class TestUns1ParsesFromTheDetectedCrop(unittest.TestCase):
         parser = self._parser(WT)
         for row in range(11):
             self.assertFalse(parser.is_small_font(row))
+
+
+#: The Working Title UNS-1 POS INIT page, transcribed from the capture.
+#: Cross-checked three ways: against the image, against the occupied-cell
+#: map the parser derives independently of what it reads, and against what
+#: the parser actually reads.  The Just Flight page is deliberately not
+#: transcribed here - its text is packed more tightly than one glyph per
+#: cell in places, so several columns would be guesswork, and a fixture
+#: that encodes a guess is worse than no fixture.
+WT_TRUTH = [
+    " POS    INIT 1/1        ",
+    "                    DATE",
+    "INITIAL POS    26-AUG-26",
+    "ID  <GPS>            UTC",
+    "N  28 29.23     16:28:22",
+    "W 016 20.92             ",
+    "                        ",
+    "NAV DATABASE EXPIRES    ",
+    "11-JUN-26               ",
+    "                        ",
+    "←ACCEPT FMC VER  WT2.2.3",
+]
+
+
+@unittest.skipIf(not WT.exists(), "UNS-1 capture missing")
+class TestUns1ColdStart(unittest.TestCase):
+    """What this display reads as on a first run, with nothing learned.
+
+    The UNS-1 is the hardest display the project supports: 45% of its
+    glyphs cross a cell edge, because it is not really a fixed-pitch grid
+    (ISSUES.md #28).  It used to come back as INITIBL POS and NBV DBTBBBSE
+    - every A read as a B, because warmup learned the raw OCR reading while
+    the display corrected it, so the wrong label was the one that stuck.
+
+    Measured at 91.5% after that was fixed.  The floor is set below it, and
+    the errors that remain are listed in the failure message rather than
+    asserted away, so a change that trades one for another is visible.
+    """
+
+    def setUp(self):
+        import tempfile
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._saved = mcdu_templates._template_matcher
+        self._saved_imgs = dict(mcdu_parser._prev_row_imgs)
+        self._saved_ocr = dict(mcdu_parser._prev_row_ocr)
+        mcdu_parser._prev_row_imgs.clear()
+        mcdu_parser._prev_row_ocr.clear()
+        mcdu_templates._template_matcher = mcdu_parser.TemplateMatcher(
+            template_path=Path(self._tmpdir.name) / "uns1.npz")
+
+    def tearDown(self):
+        mcdu_templates._template_matcher = self._saved
+        mcdu_parser._prev_row_imgs.clear()
+        mcdu_parser._prev_row_ocr.clear()
+        mcdu_parser._prev_row_imgs.update(self._saved_imgs)
+        mcdu_parser._prev_row_ocr.update(self._saved_ocr)
+        self._tmpdir.cleanup()
+
+    def _read(self):
+        crop = detected_crop(WT)
+        self.assertIsNotNone(crop, "nothing detected")
+        x, y, w, h = crop
+        image = load(WT)[y:y + h, x:x + w]
+        return MCDUParser(image, columns=24, rows=11, source_id="uns1cold",
+                          small_font_rule="all_large").parse_grid()
+
+    def test_the_page_reads(self):
+        for line in WT_TRUTH:
+            self.assertEqual(len(line), 24)
+        grid = self._read()
+        total = correct = 0
+        errors = []
+        for row in range(11):
+            for col in range(24):
+                cell = grid[row * 24 + col]
+                got = cell[0] if cell else " "
+                want = WT_TRUTH[row][col]
+                if want == " " and got == " ":
+                    continue
+                total += 1
+                if got == want:
+                    correct += 1
+                else:
+                    errors.append(f"R{row:02d}C{col:02d} {want!r}->{got!r}")
+        self.assertGreaterEqual(
+            correct / total, 0.85,
+            f"{correct}/{total} = {correct / total:.1%}; errors: {errors}",
+        )
+
+    def test_the_words_come_out_whole(self):
+        """The failure this page is here for was letters, not layout."""
+        grid = self._read()
+        text = chr(10).join(
+            "".join((grid[r * 24 + c][0] if grid[r * 24 + c] else " ")
+                    for c in range(24))
+            for r in range(11)
+        )
+        for word in ("INITIAL POS", "NAV DATABASE EXPIRES", "11-JUN-26",
+                     "FMC VER"):
+            self.assertIn(word, text, f"{word!r} did not survive: {text!r}")
 
 
 if __name__ == "__main__":

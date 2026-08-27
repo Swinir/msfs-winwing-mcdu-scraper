@@ -229,7 +229,9 @@ msfs-winwing-mcdu-scraper/
 │   ├── pipeline.py             # Shared capture/parse/stabilise/send loop
 │   ├── config.py               # Configuration
 │   ├── window_capture.py       # Window capture (GDI, WGC, mss)
-│   ├── mcdu_parser.py          # Geometry, templates, OCR, extraction
+│   ├── mcdu_parser.py          # Cell extraction, OCR, assembling the grid
+│   ├── mcdu_glyphs.py          # Naming a glyph by its shape alone
+│   ├── mcdu_templates.py       # The learned-glyph store
 │   ├── mcdu_charset.py         # What the CDU font can draw
 │   ├── mcdu_labels.py          # Known fixed labels on Airbus pages
 │   ├── mcdu_detector.py        # Automatic MCDU region detection

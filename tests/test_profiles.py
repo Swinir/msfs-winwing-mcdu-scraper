@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 sys.path.insert(0, str(Path(__file__).parent))
 
 import mcdu_parser
+import mcdu_templates
 from aircraft_profiles import (
     DEFAULT_PROFILE_ID,
     KNOWN_FONTS,
@@ -153,20 +154,20 @@ class TestUns1EndToEnd(unittest.TestCase):
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
-        self._saved = mcdu_parser._template_matcher
+        self._saved = mcdu_templates._template_matcher
         self._saved_imgs = dict(mcdu_parser._prev_row_imgs)
         self._saved_ocr = dict(mcdu_parser._prev_row_ocr)
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
         self.matcher = TemplateMatcher(
             template_path=Path(self._tmpdir.name) / "uns1.npz")
-        mcdu_parser._template_matcher = self.matcher
+        mcdu_templates._template_matcher = self.matcher
 
         self.page = uns1_page()
         self.screen = render_mcdu(self.page, cell_size=(18, 26))
 
     def tearDown(self):
-        mcdu_parser._template_matcher = self._saved
+        mcdu_templates._template_matcher = self._saved
         mcdu_parser._prev_row_imgs.clear()
         mcdu_parser._prev_row_ocr.clear()
         mcdu_parser._prev_row_imgs.update(self._saved_imgs)
@@ -180,7 +181,7 @@ class TestUns1EndToEnd(unittest.TestCase):
             for col, char in enumerate(line):
                 if char == " ":
                     continue
-                binary = parser._preprocess_cell(parser.extract_cell(row, col))
+                binary = parser.cell_binary(row, col)
                 self.matcher.learn(char, binary, confidence=1.0)
                 self.matcher.learn(char, binary, confidence=1.0)
 
@@ -235,12 +236,12 @@ class TestTemplateStoreSwitching(unittest.TestCase):
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
-        self._saved_matcher = mcdu_parser._template_matcher
-        self._saved_path = mcdu_parser._template_store_path
+        self._saved_matcher = mcdu_templates._template_matcher
+        self._saved_path = mcdu_templates._template_store_path
 
     def tearDown(self):
-        mcdu_parser._template_matcher = self._saved_matcher
-        mcdu_parser._template_store_path = self._saved_path
+        mcdu_templates._template_matcher = self._saved_matcher
+        mcdu_templates._template_store_path = self._saved_path
         self._tmpdir.cleanup()
 
     @staticmethod
@@ -252,14 +253,14 @@ class TestTemplateStoreSwitching(unittest.TestCase):
     def test_switching_isolates_stores(self):
         base = Path(self._tmpdir.name)
         set_template_store(base / "airbus.npz")
-        matcher = mcdu_parser._get_template_matcher()
+        matcher = mcdu_templates._get_template_matcher()
         matcher.learn("A", self._glyph(), confidence=1.0)
         matcher.learn("A", self._glyph(), confidence=1.0)
         self.assertEqual(matcher.template_count, 1)
 
         set_template_store(base / "boeing.npz")
         self.assertEqual(
-            mcdu_parser._get_template_matcher().template_count, 0,
+            mcdu_templates._get_template_matcher().template_count, 0,
             "Boeing store inherited Airbus glyphs",
         )
 
@@ -267,23 +268,23 @@ class TestTemplateStoreSwitching(unittest.TestCase):
         """The outgoing store is saved on switch, so nothing is lost."""
         base = Path(self._tmpdir.name)
         set_template_store(base / "airbus.npz")
-        matcher = mcdu_parser._get_template_matcher()
+        matcher = mcdu_templates._get_template_matcher()
         matcher.learn("A", self._glyph(), confidence=1.0)
         matcher.learn("A", self._glyph(), confidence=1.0)
 
         set_template_store(base / "boeing.npz")
         set_template_store(base / "airbus.npz")
         self.assertEqual(
-            mcdu_parser._get_template_matcher().template_count, 1,
+            mcdu_templates._get_template_matcher().template_count, 1,
             "glyphs were lost when switching away and back",
         )
 
     def test_same_store_is_a_noop(self):
         base = Path(self._tmpdir.name)
         set_template_store(base / "a.npz")
-        first = mcdu_parser._get_template_matcher()
+        first = mcdu_templates._get_template_matcher()
         set_template_store(base / "a.npz")
-        self.assertIs(mcdu_parser._get_template_matcher(), first)
+        self.assertIs(mcdu_templates._get_template_matcher(), first)
 
 
 if __name__ == "__main__":

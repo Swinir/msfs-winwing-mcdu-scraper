@@ -825,6 +825,251 @@ rather than cycling through all three backends and blaming the last one.
 
 ---
 
+## #28 — The grid was right; it just did not contain the characters
+
+**Type:** bug · **Severity:** medium · **Status:** FIXED
+
+The suspicion was that the uniform-grid model is wrong — that the FMCs are
+not really fixed-pitch, or that the pop-out windows come out at ratios the
+lattice cannot follow.  Measured against the captures in tests/data, half of
+that is right and it is not the half it looks like.
+
+**The pitch is not the problem.**  Fitting the observed glyph positions and
+looking for a drift across the row — which is what a wrong pitch or a
+stretched window produces — gives between 0.06% and 0.44% on every capture.
+Over 24 columns that is at most 1.7px.  Nor is the phase: re-fitting it row
+by row would move 0% of characters into a different column on four of the
+six captures, 1.1% on the Avro and 6.8% on one UNS-1.  **The lattice puts
+characters in the right cells.**
+
+**What it does not do is contain them.**  Counting glyphs whose body crosses
+a column edge:
+
+| capture | crossing |
+|---|---|
+| ATR 42/72-600 (both pages) | 0% |
+| Fokker 70/100 | 0% |
+| A330 | 17% |
+| UNS-1 (Working Title) | 45% |
+| Avro RJ GNLU | 60% |
+| UNS-1 (Just Flight 146) | 66% |
+
+The ATR and the Fokker really are fixed-pitch.  The Avro and the UNS-1 are
+not: their glyph centres scatter around the lattice by a sixth of a cell,
+and since that scatter is not a drift, no pitch or origin correction can
+remove it.  Cutting at the lattice there hands the matcher two
+half-characters and it can name neither, which is why the UNS-1 profile has
+always carried a warning and why the Avro reads worse than its font
+deserves.
+
+**Fix:** recognition no longer reads the lattice square.  It reads a window
+35% of a cell wider each side and keeps the ink components lying nearer this
+cell's centre than any neighbour's — so a character that sits off-centre
+comes back whole, and the neighbour that the wider window also caught does
+not come with it.  A component too wide to be one character is two that
+touch; those are cut apart at their thinnest column, which is where a reader
+would cut and is rarely the lattice edge.
+
+Everything else still works on the lattice square — whether the cell is
+empty, what colour it is, whether it is reverse video.  Those are properties
+of the cell, and a glyph-tight crop reads as reverse video on its own.
+
+Glyphs left meeting a cell edge afterwards: A330 17% → 0%, ATR 3% → 0.7%,
+Fokker 0% → 0%, UNS-1 (WT) 45% → 7%, Avro 60% → 15%, UNS-1 (JF) 66% → 17%.
+What remains on the last three is touching neighbours, a property of how
+those displays draw text rather than of the grid.
+
+Two details cost a round each, and both are worth remembering:
+
+- The wider window must be thresholded at the *cell's* ink level.  Otsu
+  reads the histogram it is given, so re-deriving it over the window shifts
+  the split, and the same glyph then binarises differently depending on how
+  much of its neighbours came along — which is precisely what a template
+  match cannot tolerate.
+- The window must not be cropped tight.  `_extract_glyph` pads the bounding
+  box by a pixel so glyphs sitting slightly differently in their cells still
+  normalise to the same shape, and cropping took that room away on one axis,
+  changing the glyph's aspect and stopping it matching what it was learned
+  from.
+
+The tests that teach the matcher from ground truth were reaching past this,
+calling `_preprocess_cell(extract_cell(...))` where the parser itself calls
+`cell_binary`.  They now use the same path, which is what let the second
+detail above show up as a failure rather than as a quiet loss of accuracy.
+
+Cold-start accuracy is unchanged on the three captures with transcriptions —
+99.3% / 100% / 93.3% — which is the expected result: two of them were never
+being clipped, and on the A330 the classifier was already coping.  The gain
+is on the Avro and the UNS-1, and it cannot be scored until one of their
+pages is transcribed.
+
+---
+
+## #29 — Warmup learned the reading the display would have corrected
+
+**Type:** bug · **Severity:** high · **Status:** FIXED
+
+Every `A` on the UNS-1 and the Avro read as `B`.  `INITIAL` came back as
+`INITIBL`, `NAV DATABASE` as `NBV DBTBBBSE`, `AIRCRAFT` as `BIRCRBFT`,
+`STANDARD` as `STBNDBRD`.  Not occasionally — every one.
+
+Phase 5 puts an EasyOCR proposal through `_disambiguate_confusables` before
+it reaches the display, which is where the A/B test lives.  Warmup did not:
+it voted on and learned the *raw* reading.  So the character the display
+would have corrected was the one that became a template, and from the next
+frame on every A matched it — as a B, from a template, immune to the
+correction by design (#5 exists to stop a heuristic overruling a template).
+One wrong reading during warmup was enough to lose a letter for the session.
+
+**Fix:** warmup applies the same rule to the same kind of input.  It is the
+scoping that matters, not the placement: a raw OCR proposal is corrected, a
+template match still is not.
+
+That exposed a second problem, which the first had been hiding.  The A/B
+test compared the ink span of the glyph's top quarter against its bottom
+quarter.  Measured over 105 labelled A, B and 8 from the captures and the
+rendered pages, that ratio overlaps — some A are as wide at the top as at
+the bottom — while the top span *on its own* separates them completely:
+
+| letter | top-quarter span |
+|---|---|
+| A | 0.22 – 0.67 |
+| 8 | 0.75 – 1.00 |
+| B | 0.88 – 1.00 |
+
+Worse, when the ratio failed to name an A the glyph fell through to the B/8
+test, whose left edge is not continuous on an A either, so it came out as
+`8`.  Both tests are rewritten on the measurement: A is decided by top span
+alone, and B versus 8 now rewrites only the unmistakable cases and leaves
+the ambiguous middle as it was read, because those two genuinely overlap
+and `_correct_row_context` already separates letters from digits by token.
+
+Damage to correct characters is unchanged at 1 in 419; repairs of injected
+pair errors go from 97 to 98 of 126.
+
+The Working Title UNS-1 page now reads at **91.5%** from a cold start, and
+`tests/test_uns1_captures.py` scores it.  Its transcription is
+cross-checked three ways — against the image, against the occupied-cell map
+the parser derives without reading anything, and against what the parser
+reads.  The Just Flight UNS-1 and the Avro are not transcribed: their text
+is packed more tightly than one glyph per cell in places, so several columns
+would be guesswork, and a fixture encoding a guess is worse than none.
+Qualitatively both went from unreadable to mostly right — `INITIAL POS`,
+`STANDARD/EXTENDED`, `AIRCRAFT`, `AIRAC 2605`, `MAY14JUN11/26` all correct
+where they were `INITIBL`, `STBNDBRD`, `BIRCRBFT`, `BIRBC`, `M8Y4JUN11/26`.
+
+Known and not fixed: the Just Flight UNS-1's reverse-video `ACCEPT` row
+reads as punctuation.  The Working Title's equivalent row is fine, so this
+is that capture's rendering of the block rather than reverse video in
+general.
+
+---
+
+## #30 — A window border stole the Avro's first column
+
+**Type:** bug · **Severity:** medium · **Status:** FIXED
+
+Every row of the Avro GNLU capture came back with an invented character in
+column 0 — `I`, `1`, `6`, `3`.  The detected region started at x=0, and the
+first three pixel columns there are the window's own border: lit down 335
+of 335 rows.
+
+`_ink_mask` suppressed most of it, but 38 pixels survived, and that was
+enough to anchor the grid's origin on the border instead of on the text,
+which begins at x=17.  Every column was then a cell off.
+
+`_text_rows` has filtered horizontal rules from the start — a bezel line or
+an underline runs edge to edge where text is broken by the gaps between
+glyphs.  There was no vertical twin.  There is now: a column lit down more
+than 92% of the screen is a border and is removed from the mask, with one
+pixel either side for the antialiased flank.  Measured over the eight
+captures, a border column is lit 98-100% of the way down and the busiest
+column of text reaches 49%, so the threshold has room to spare.  Four of
+the eight captures have one, so this was never only about the Avro.
+
+Two details: the coverage is measured over the screen rows only, because
+flattening the chrome rows dims them and a border running the full height
+of the window stops looking solid if those rows are counted; and the
+one-pixel widening is a shift rather than a roll, so a border on the left
+edge does not blank the right one.
+
+The Avro now detects at x=17.  Its page went from
+
+    1AVRO-RJ8S    1 BIRCRBFT    1 NAV OATB    6(INDEX
+
+to
+
+    AVRO-RJ85      AIRCRAFT      NAV DATA     (INDEX
+
+---
+
+## #31 — A vs B: the third test was the one that worked
+
+**Type:** bug · **Severity:** medium · **Status:** FIXED
+
+#29 fixed *where* the confusable-pair rule runs.  This is about whether the
+A/B test in it was ever right, and it took three attempts to find out,
+because each was measured on too small a sample.
+
+1. **Top quarter against bottom quarter.**  The original.  Overlaps
+   outright — some A are as wide at the top as at the bottom.
+2. **Top quarter alone.**  Clean over the 105 glyphs available at the
+   time — A reached 0.67 at most, B started at 0.88.  Then the Avro was
+   included: its A has a flat top and reaches 1.00, indistinguishable from
+   a B that way.
+3. **The left edge.**  A B is built on a stem — ink in its left-hand
+   columns on every row from top to bottom.  An A's left side is a
+   diagonal, so it reaches the left edge only near the foot.  Over 60 A and
+   23 B drawn by five different displays, A never gets past 0.92 of the
+   height and B is at 1.00 every single time.
+
+The lesson is not about A and B.  It is that a shape rule measured against
+one font is a rule about that font: the second attempt looked perfect and
+was wrong, and only adding a display with a differently drawn A showed it.
+Anything of this kind added here should be scored across every capture in
+tests/data, not the convenient ones.
+
+B versus 8 now rewrites only the unmistakable cases and leaves the
+ambiguous middle as read, because those two genuinely overlap and
+`_correct_row_context` already separates letters from digits by token.
+
+Damage to correct characters stays at 1 in 419.  Fokker cold start 93.3% →
+94.1%; the Avro and both UNS-1 pages read their A correctly for the first
+time.
+
+---
+
+## #32 — mcdu_parser split into three modules
+
+**Type:** design · **Severity:** low · **Status:** FIXED
+
+2115 lines holding three separable jobs.  Now:
+
+- `mcdu_glyphs.py` (252) — naming a glyph by its shape alone: the entry
+  box, the punctuation the geometry pass owns, and the confusable-pair
+  rules.  Pure functions, no state.
+- `mcdu_templates.py` (419) — the learned-glyph store and the two rules
+  about it that were learned the hard way (#5 and #25).
+- `mcdu_parser.py` (1753) — cell extraction, the EasyOCR passes, and
+  assembling the grid.
+
+One coupling had to be made explicit rather than moved.  Switching the
+store must also discard the parser's row-level OCR cache, whose entries
+were read with the outgoing store's glyphs.  So `mcdu_templates.set_store`
+owns the store and reports whether it changed, and `mcdu_parser`'s
+`set_template_store` wraps it and clears what that invalidates.
+
+Names the rest of the project uses — `TemplateMatcher`,
+`_get_template_matcher`, `GEOMETRY_OWNED`, `is_entry_box` — are still
+importable from `mcdu_parser`, because where a glyph is named from is an
+implementation detail.  The one thing that could not be re-exported is the
+module-level singleton: rebinding `mcdu_parser._template_matcher` would no
+longer affect what the store returns, so tests that swap it in now address
+`mcdu_templates` directly.  That was deliberate — it fails loudly rather
+than silently doing nothing.
+
+---
+
 ## #9 — Migrate the GUI from Tkinter to PySide6
 
 **Type:** feature · **Severity:** n/a · **Status:** FIXED
